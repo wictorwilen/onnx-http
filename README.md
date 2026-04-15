@@ -1,6 +1,6 @@
 # onnx-http
 
-A Rust-based HTTP server that loads an ONNX model (e.g., Phi‑3.5 Mini), runs inference via ONNX Runtime with optional NPU acceleration (QNNExecutionProvider), and exposes an Ollama-compatible `/v1/embeddings` endpoint. Designed to run natively on Windows ARM64 and be called from WSL or any HTTP client.
+A Rust-based HTTP server that loads an ONNX model, runs inference via ONNX Runtime with optional NPU acceleration (QNNExecutionProvider), and exposes an Ollama-compatible `/v1/embeddings` endpoint. Designed to run natively on Windows ARM64 and be called from WSL or any HTTP client.
 
 ## Features
 
@@ -15,14 +15,30 @@ A Rust-based HTTP server that loads an ONNX model (e.g., Phi‑3.5 Mini), runs i
 ## Prerequisites
 
 - **Rust** (stable, 1.75+) — [install](https://rustup.rs/)
-- **ONNX Runtime** shared library (`onnxruntime.dll`) — [download](https://github.com/microsoft/onnxruntime/releases)
+- **ONNX Runtime 1.24.x** shared library (`onnxruntime.dll`) — [download](https://github.com/microsoft/onnxruntime/releases/tag/v1.24.4)
+  - For Windows ARM64: download `onnxruntime-win-arm64x-1.24.4.zip`
 - An ONNX model that outputs hidden states in shape `[batch, sequence, hidden_dim]`
 - A HuggingFace `tokenizer.json` matching your model
+
+### Recommended Model
+
+[sentence-transformers/all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) — a purpose-built 384-dim embedding model.
+
+Download model files:
+
+```bash
+pip install huggingface_hub
+python -c "from huggingface_hub import hf_hub_download; hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'onnx/model.onnx', local_dir='models', local_dir_use_symlinks=False)"
+python -c "from huggingface_hub import hf_hub_download; hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'tokenizer.json', local_dir='models', local_dir_use_symlinks=False)"
+```
+
+Then move/rename as needed so the files are at `models/model.onnx` and `models/tokenizer.json`.
 
 ### Optional (for NPU acceleration)
 
 - **Qualcomm QNN SDK** — required for `QNNExecutionProvider` on Snapdragon/ARM64 devices
 - Place QNN DLLs (`QnnHtp.dll`, `QnnSystem.dll`, etc.) in the same directory as the executable or on `PATH`
+- Set `USE_QNN=1` environment variable to enable
 
 ## Quick Start
 
@@ -34,11 +50,7 @@ cd onnx-http
 cargo build --release
 ```
 
-The compiled binary will be at `target/release/onnx-http.exe`.
-
 ### 2. Add your model files
-
-Place your ONNX model and tokenizer in the `models/` directory:
 
 ```
 models/
@@ -46,32 +58,27 @@ models/
 └── tokenizer.json    # HuggingFace tokenizer config
 ```
 
-> **Tip:** For Phi‑3.5 Mini, download the ONNX variant from [Hugging Face](https://huggingface.co/microsoft/Phi-3.5-mini-instruct) and export/convert to ONNX format with `optimum-cli`.
-
 ### 3. Add ONNX Runtime library
 
-The server uses dynamic loading (`load-dynamic` feature). Place `onnxruntime.dll` either:
+Download ONNX Runtime **1.24.x** for your platform and place `onnxruntime.dll` either:
 
-- In the same directory as `onnx-http.exe`, **or**
-- On your system `PATH`
-
-You can set the library path explicitly via the `ORT_DYLIB_PATH` environment variable:
+- Next to the compiled binary (`target/release/`), **or**
+- Set `ORT_DYLIB_PATH` to the full path:
 
 ```powershell
 $env:ORT_DYLIB_PATH = "C:\path\to\onnxruntime.dll"
 ```
 
+> **⚠️ Important:** Windows ships a bundled `onnxruntime.dll` in System32 that is incompatible. Always use `ORT_DYLIB_PATH` to point to the correct 1.24.x DLL, or place it next to your executable.
+
 ### 4. Run the server
 
 ```powershell
-# From the project root (models/ must be in the working directory)
+$env:ORT_DYLIB_PATH = "C:\path\to\onnxruntime.dll"
 cargo run --release
-
-# Or run the binary directly
-.\target\release\onnx-http.exe
 ```
 
-The server starts on `http://0.0.0.0:11434`.
+The server starts on `http://0.0.0.0:8901`.
 
 ## API Reference
 
@@ -82,7 +89,7 @@ Generate embeddings for one or more text inputs.
 **Single input:**
 
 ```bash
-curl http://localhost:11434/v1/embeddings \
+curl http://localhost:8901/v1/embeddings \
   -H "Content-Type: application/json" \
   -d '{"input": "Hello, world!"}'
 ```
@@ -90,7 +97,7 @@ curl http://localhost:11434/v1/embeddings \
 **Batch input:**
 
 ```bash
-curl http://localhost:11434/v1/embeddings \
+curl http://localhost:8901/v1/embeddings \
   -H "Content-Type: application/json" \
   -d '{"input": ["Hello, world!", "How are you?", "ONNX is great"]}'
 ```
@@ -100,7 +107,7 @@ curl http://localhost:11434/v1/embeddings \
 ```json
 {
   "object": "list",
-  "model": "phi-3.5-mini-onnx",
+  "model": "all-MiniLM-L6-v2",
   "data": [
     {
       "object": "embedding",
@@ -111,142 +118,79 @@ curl http://localhost:11434/v1/embeddings \
 }
 ```
 
-**Error response:**
-
-```json
-{
-  "error": "Input text must not be empty"
-}
-```
-
 ### `GET /health`
 
-Health check endpoint.
-
 ```bash
-curl http://localhost:11434/health
-```
-
-```json
-{
-  "status": "ok"
-}
+curl http://localhost:8901/health
+# {"status":"ok"}
 ```
 
 ## WSL ↔ Windows Interop
 
-The server binds to `0.0.0.0:11434`, making it accessible from WSL via `localhost`:
+The server binds to `0.0.0.0:8901`, making it accessible from WSL via `localhost`:
 
 ```bash
 # From WSL
-curl http://localhost:11434/v1/embeddings \
+curl http://localhost:8901/v1/embeddings \
   -H "Content-Type: application/json" \
   -d '{"input": "hello from WSL"}'
 ```
 
-No Windows-specific APIs are used — it's pure Rust networking, so the standard WSL ↔ Windows localhost bridge works out of the box.
-
 ## Configuration
-
-### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `RUST_LOG` | Log level filter (`trace`, `debug`, `info`, `warn`, `error`) | `info` |
-| `ORT_DYLIB_PATH` | Path to `onnxruntime.dll` | Auto-detected |
-
-### Examples
-
-```powershell
-# Enable debug logging
-$env:RUST_LOG = "debug"
-cargo run --release
-
-# Specify ONNX Runtime location
-$env:ORT_DYLIB_PATH = "C:\onnxruntime\lib\onnxruntime.dll"
-cargo run --release
-```
+| `PORT` | Server listen port | `8901` |
+| `ORT_DYLIB_PATH` | Path to `onnxruntime.dll` | Auto-detected next to exe |
+| `USE_QNN` | Set to `1` to enable QNN NPU acceleration | Disabled |
+| `RUST_LOG` | Log level (`trace`, `debug`, `info`, `warn`, `error`) | `info` |
 
 ## Project Structure
 
 ```
 onnx-http/
-├── Cargo.toml             # Dependencies and project metadata
+├── Cargo.toml
 ├── models/
 │   ├── model.onnx         # ONNX model (user-supplied)
 │   └── tokenizer.json     # HuggingFace tokenizer (user-supplied)
 └── src/
-    ├── main.rs            # Server bootstrap, startup validation
+    ├── main.rs            # Server bootstrap, ORT init, Axum server
     ├── model.rs           # OnnxModel: ONNX session + tokenizer loading
     ├── embedding.rs       # Tokenization, inference, mean pooling
-    └── routes.rs          # Axum HTTP handlers and JSON types
-```
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  HTTP Client (WSL, curl, app)                                │
-│  POST /v1/embeddings { "input": "text" }                     │
-└─────────────────────┬────────────────────────────────────────┘
-                      │
-                      ▼
-┌──────────────────────────────────────────────────────────────┐
-│  Axum HTTP Server (0.0.0.0:11434)                            │
-│  routes.rs — parse request, validate, return JSON            │
-└─────────────────────┬────────────────────────────────────────┘
-                      │
-                      ▼
-┌──────────────────────────────────────────────────────────────┐
-│  embedding.rs                                                │
-│  1. Tokenize (HuggingFace tokenizers)                        │
-│  2. Build input tensors (input_ids, attention_mask)           │
-│  3. Run ONNX inference (via ort crate)                       │
-│  4. Mean pooling with attention mask                          │
-└─────────────────────┬────────────────────────────────────────┘
-                      │
-                      ▼
-┌──────────────────────────────────────────────────────────────┐
-│  ONNX Runtime                                                │
-│  Execution Providers: QNN (NPU) → CPU (fallback)             │
-│  Model: models/model.onnx                                    │
-└──────────────────────────────────────────────────────────────┘
+    └── routes.rs          # HTTP handlers and JSON types
 ```
 
 ## Dependencies
 
-| Crate | Version | Purpose |
-|-------|---------|---------|
-| [axum](https://crates.io/crates/axum) | 0.7 | HTTP framework |
-| [tokio](https://crates.io/crates/tokio) | 1 | Async runtime |
-| [ort](https://crates.io/crates/ort) | 2.0.0-rc.12 | ONNX Runtime bindings (dynamic loading) |
-| [tokenizers](https://crates.io/crates/tokenizers) | 0.20 | HuggingFace tokenizer |
-| [ndarray](https://crates.io/crates/ndarray) | 0.16 | N-dimensional arrays for pooling |
-| [serde](https://crates.io/crates/serde) / [serde_json](https://crates.io/crates/serde_json) | 1 | JSON serialization |
-| [tracing](https://crates.io/crates/tracing) / [tracing-subscriber](https://crates.io/crates/tracing-subscriber) | 0.1 / 0.3 | Structured logging |
-| [anyhow](https://crates.io/crates/anyhow) | 1 | Error handling |
+| Crate | Purpose |
+|-------|---------|
+| [ort](https://github.com/pykeio/ort) | ONNX Runtime bindings (dynamic loading) |
+| [axum](https://crates.io/crates/axum) | HTTP framework |
+| [tokio](https://crates.io/crates/tokio) | Async runtime |
+| [tokenizers](https://crates.io/crates/tokenizers) | HuggingFace tokenizer |
+| [ndarray](https://crates.io/crates/ndarray) | N-dimensional arrays for pooling |
+| [serde](https://crates.io/crates/serde) / [serde_json](https://crates.io/crates/serde_json) | JSON serialization |
+| [tracing](https://crates.io/crates/tracing) | Structured logging |
+| [anyhow](https://crates.io/crates/anyhow) | Error handling |
 
 ## Troubleshooting
 
+### Server hangs on startup
+
+The Windows-bundled `onnxruntime.dll` (in System32) is incompatible and causes a deadlock. Always set `ORT_DYLIB_PATH` to point to the proper ONNX Runtime 1.24.x DLL.
+
 ### "Model file not found"
 
-Ensure `models/model.onnx` exists relative to your working directory. Run the server from the project root.
-
-### "Failed to load model" / ONNX Runtime errors
-
-- Verify `onnxruntime.dll` is discoverable (same dir as exe, on PATH, or via `ORT_DYLIB_PATH`).
-- Ensure the DLL architecture matches your platform (ARM64 for Snapdragon devices).
+Run the server from the project root so `models/` is in the working directory.
 
 ### QNN execution provider not available
 
-- QNN is optional. The server falls back to CPU automatically.
-- To enable QNN: install the Qualcomm QNN SDK and place its DLLs alongside the executable.
+QNN is opt-in (`USE_QNN=1`). The server uses CPU by default and falls back gracefully.
 
 ### WSL cannot reach the server
 
-- Confirm the server is running: `curl http://localhost:11434/health` from Windows.
-- Check Windows Firewall isn't blocking port 11434.
-- On older WSL versions, you may need to use the Windows host IP instead of `localhost`.
+- Confirm the server is running: `curl http://localhost:8901/health` from Windows
+- On older WSL versions, use the Windows host IP instead of `localhost`
 
 ## License
 

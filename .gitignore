@@ -1,1 +1,10 @@
 /target
+models/*.onnx
+models/*.json
+!models/.gitkeep
+*.dll
+*.zip
+ort-*/
+ort_extracted/
+stderr.log
+stdout.log

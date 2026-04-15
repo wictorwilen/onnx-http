@@ -940,8 +940,7 @@ dependencies = [
 [[package]]
 name = "ort"
 version = "2.0.0-rc.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7de3af33d24a745ffb8fab904b13478438d1cd52868e6f17735ef6e1f8bf133"
+source = "git+https://github.com/pykeio/ort.git?branch=main#8724e89ff005ebef4339d7280ff592837404a98d"
 dependencies = [
  "libloading",
  "ndarray 0.17.2",
@@ -954,8 +953,7 @@ dependencies = [
 [[package]]
 name = "ort-sys"
 version = "2.0.0-rc.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7b497d21a8b6fbb4b5a544f8fadb77e801a09ae0add9e411d31c6f89e3c1e90"
+source = "git+https://github.com/pykeio/ort.git?branch=main#8724e89ff005ebef4339d7280ff592837404a98d"
 dependencies = [
  "hmac-sha256",
  "lzma-rust2",

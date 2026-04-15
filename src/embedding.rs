@@ -5,6 +5,7 @@ use tracing::debug;
 use crate::model::OnnxModel;
 
 /// Generate embeddings for a single text input.
+#[allow(dead_code)]
 pub fn embed(model: &OnnxModel, text: &str) -> anyhow::Result<Vec<f32>> {
     let results = embed_batch(model, &[text.to_string()])?;
     results
@@ -30,26 +31,32 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
         return Err(anyhow::anyhow!("All inputs produced empty token sequences"));
     }
 
-    // Build padded input_ids and attention_mask as flat vecs
+    // Build padded input_ids, attention_mask, and token_type_ids as flat vecs
     let mut input_ids_vec = vec![0i64; batch_size * max_len];
     let mut attention_mask_vec = vec![0i64; batch_size * max_len];
+    let mut token_type_ids_vec = vec![0i64; batch_size * max_len];
 
     for (i, encoding) in encodings.iter().enumerate() {
         let ids = encoding.get_ids();
         let mask = encoding.get_attention_mask();
-        for (j, (&id, &m)) in ids.iter().zip(mask.iter()).enumerate() {
-            input_ids_vec[i * max_len + j] = id as i64;
-            attention_mask_vec[i * max_len + j] = m as i64;
+        let type_ids = encoding.get_type_ids();
+        for j in 0..ids.len() {
+            input_ids_vec[i * max_len + j] = ids[j] as i64;
+            attention_mask_vec[i * max_len + j] = mask[j] as i64;
+            token_type_ids_vec[i * max_len + j] = type_ids[j] as i64;
         }
     }
 
-    // Create tensors using (shape, data) tuple form to avoid ndarray version issues
+    // Create tensors using (shape, data) tuple form
     let input_ids_tensor =
         Tensor::from_array((vec![batch_size, max_len], input_ids_vec.clone().into_boxed_slice()))
             .map_err(|e| anyhow::anyhow!("Failed to create input_ids tensor: {e}"))?;
     let attention_mask_tensor =
         Tensor::from_array((vec![batch_size, max_len], attention_mask_vec.clone().into_boxed_slice()))
             .map_err(|e| anyhow::anyhow!("Failed to create attention_mask tensor: {e}"))?;
+    let token_type_ids_tensor =
+        Tensor::from_array((vec![batch_size, max_len], token_type_ids_vec.into_boxed_slice()))
+            .map_err(|e| anyhow::anyhow!("Failed to create token_type_ids tensor: {e}"))?;
 
     // Run ONNX inference and extract output while session lock is held
     let (shape, hidden_data) = {
@@ -61,6 +68,7 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
             .run(ort::inputs![
                 "input_ids" => input_ids_tensor,
                 "attention_mask" => attention_mask_tensor,
+                "token_type_ids" => token_type_ids_tensor,
             ])
             .map_err(|e| anyhow::anyhow!("ONNX inference failed: {e}"))?;
 

@@ -17,15 +17,24 @@ impl OnnxModel {
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {e}"))?;
 
         info!("Loading ONNX model from {}", model_path.display());
-        info!("Requesting execution providers: QNNExecutionProvider -> CPUExecutionProvider");
 
-        let session = Session::builder()
-            .map_err(|e| anyhow::anyhow!("Failed to create session builder: {e}"))?
-            .with_execution_providers([
-                ort::execution_providers::QNNExecutionProvider::default().build(),
-                ort::execution_providers::CPUExecutionProvider::default().build(),
-            ])
-            .map_err(|e| anyhow::anyhow!("Failed to set execution providers: {e}"))?
+        let use_qnn = std::env::var("USE_QNN").unwrap_or_default() == "1";
+        let mut builder = Session::builder()
+            .map_err(|e| anyhow::anyhow!("Failed to create session builder: {e}"))?;
+
+        if use_qnn {
+            info!("Execution providers: QNNExecutionProvider -> CPUExecutionProvider");
+            builder = builder
+                .with_execution_providers([
+                    ort::execution_providers::QNNExecutionProvider::default().build(),
+                    ort::execution_providers::CPUExecutionProvider::default().build(),
+                ])
+                .map_err(|e| anyhow::anyhow!("Failed to set execution providers: {e}"))?;
+        } else {
+            info!("Execution provider: CPUExecutionProvider (set USE_QNN=1 to enable NPU)");
+        }
+
+        let session = builder
             .commit_from_file(model_path)
             .map_err(|e| anyhow::anyhow!("Failed to load model: {e}"))?;
 

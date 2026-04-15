@@ -107,7 +107,7 @@ pub async fn embeddings(
 
     Ok(Json(EmbeddingResponse {
         object: "list",
-        model: "phi-3.5-mini-onnx",
+        model: "all-MiniLM-L6-v2",
         data,
     }))
 }
