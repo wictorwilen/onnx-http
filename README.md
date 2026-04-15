@@ -41,7 +41,8 @@ Then start the server:
 
 ```powershell
 $env:ORT_DYLIB_PATH = "$PWD\onnxruntime.dll"
-.\target\release\onnx-http.exe
+.\target\release\onnx-http.exe           # CPU mode (default)
+.\target\release\onnx-http.exe --npu     # NPU mode (Snapdragon)
 ```
 
 ## Manual Setup
@@ -117,8 +118,17 @@ The compiled binary will be at `target\release\onnx-http.exe`.
 # Set the path to the correct ONNX Runtime DLL
 $env:ORT_DYLIB_PATH = "$PWD\onnxruntime.dll"
 
-# Run from the project root (so models/ is found)
+# CPU mode (default)
 .\target\release\onnx-http.exe
+
+# NPU mode (Snapdragon devices with QNN)
+.\target\release\onnx-http.exe --npu
+
+# Custom port
+.\target\release\onnx-http.exe --port 9000
+
+# All options
+.\target\release\onnx-http.exe --help
 ```
 
 You should see output like:
@@ -228,21 +238,28 @@ for item in data["data"]:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ORT_DYLIB_PATH` | **Required.** Full path to `onnxruntime.dll` (v1.24.x) | Auto-detects next to exe |
-| `PORT` | Server listen port | `8901` |
-| `USE_QNN` | Set to `1` to enable Qualcomm QNN NPU acceleration | Disabled (CPU only) |
+| `PORT` | Server listen port (overridden by `--port`) | `8901` |
 | `RUST_LOG` | Log level (`trace`, `debug`, `info`, `warn`, `error`) | `info` |
+
+### Command-line options
+
+| Flag | Description |
+|------|-------------|
+| `--npu` | Use QNN NPU execution provider (with CPU fallback) |
+| `--cpu` | Use CPU execution provider only (default) |
+| `--port N` | Server listen port (overrides `PORT` env var) |
+| `--help` | Show help message |
 
 ### NPU acceleration (Snapdragon devices)
 
-If you have a Qualcomm Snapdragon device with NPU and the QNN SDK installed:
+If you have a Qualcomm Snapdragon device with NPU, the setup script automatically downloads the QNN-enabled ONNX Runtime build (from the `Microsoft.ML.OnnxRuntime.QNN` NuGet package), which includes all required QNN DLLs.
 
 ```powershell
-$env:USE_QNN = "1"
 $env:ORT_DYLIB_PATH = "$PWD\onnxruntime.dll"
-.\target\release\onnx-http.exe
+.\target\release\onnx-http.exe --npu
 ```
 
-The server will attempt QNNExecutionProvider first, falling back to CPU if unavailable. Place QNN DLLs (`QnnHtp.dll`, `QnnSystem.dll`, etc.) alongside the executable or on `PATH`.
+The server will attempt QNNExecutionProvider first, falling back to CPU if unavailable.
 
 ## Project Structure
 

@@ -71,25 +71,50 @@ if (-not (Test-Path "onnxruntime.dll")) {
     # Detect architecture
     $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
     if ($arch -eq "Arm64") {
-        $ortUrl = "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-arm64x-1.24.4.zip"
-        $ortDir = "onnxruntime-win-arm64x-1.24.4"
+        # Use the QNN-enabled NuGet package for ARM64 (includes QNN DLLs)
+        $nugetUrl = "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.QNN/1.24.4"
+        Write-Host "  Architecture: $arch (downloading QNN-enabled build)"
+        Write-Host "  Downloading Microsoft.ML.OnnxRuntime.QNN 1.24.4..."
+        Invoke-WebRequest -Uri $nugetUrl -OutFile "ort-qnn.nupkg.zip"
+
+        Write-Host "  Extracting DLLs..."
+        Expand-Archive "ort-qnn.nupkg.zip" -DestinationPath "ort-qnn-extract" -Force
+
+        # The NuGet package has DLLs in runtimes/win-arm64/native/
+        $nativeDir = "ort-qnn-extract\runtimes\win-arm64\native"
+        if (Test-Path $nativeDir) {
+            Copy-Item "$nativeDir\onnxruntime.dll" "onnxruntime.dll"
+            # Copy QNN DLLs (QnnHtp.dll, QnnSystem.dll, etc.)
+            Get-ChildItem "$nativeDir\*.dll" | Where-Object { $_.Name -ne "onnxruntime.dll" } | ForEach-Object {
+                Copy-Item $_.FullName $_.Name
+                Write-Host "  Copied QNN DLL: $($_.Name)" -ForegroundColor DarkGray
+            }
+        } else {
+            Write-Host "  WARNING: Expected native dir not found, listing package contents..." -ForegroundColor DarkYellow
+            Get-ChildItem "ort-qnn-extract" -Recurse -Filter "*.dll" | ForEach-Object { Write-Host "    $($_.FullName)" }
+        }
+
+        # Cleanup
+        Remove-Item "ort-qnn.nupkg.zip" -Force
+        Remove-Item "ort-qnn-extract" -Recurse -Force
+        Write-Host "  onnxruntime.dll + QNN DLLs ready" -ForegroundColor Green
     } else {
+        # x64: use standard ORT from GitHub releases (no QNN on x64)
         $ortUrl = "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip"
         $ortDir = "onnxruntime-win-x64-1.24.4"
+        Write-Host "  Architecture: $arch (QNN not available on x64, using CPU-only build)"
+        Write-Host "  Downloading from $ortUrl..."
+        Invoke-WebRequest -Uri $ortUrl -OutFile "ort-download.zip"
+
+        Write-Host "  Extracting onnxruntime.dll..."
+        Expand-Archive "ort-download.zip" -DestinationPath "ort-extract" -Force
+        Copy-Item "ort-extract\$ortDir\lib\onnxruntime.dll" "onnxruntime.dll"
+
+        # Cleanup
+        Remove-Item "ort-download.zip" -Force
+        Remove-Item "ort-extract" -Recurse -Force
+        Write-Host "  onnxruntime.dll ready (CPU only)" -ForegroundColor Green
     }
-
-    Write-Host "  Architecture: $arch"
-    Write-Host "  Downloading from $ortUrl..."
-    Invoke-WebRequest -Uri $ortUrl -OutFile "ort-download.zip"
-
-    Write-Host "  Extracting onnxruntime.dll..."
-    Expand-Archive "ort-download.zip" -DestinationPath "ort-extract" -Force
-    Copy-Item "ort-extract\$ortDir\lib\onnxruntime.dll" "onnxruntime.dll"
-
-    # Cleanup
-    Remove-Item "ort-download.zip" -Force
-    Remove-Item "ort-extract" -Recurse -Force
-    Write-Host "  onnxruntime.dll ready" -ForegroundColor Green
 } else {
     Write-Host "  onnxruntime.dll already exists, skipping" -ForegroundColor DarkGray
 }
@@ -125,7 +150,12 @@ Write-Host ""
 Write-Host "To start the server:" -ForegroundColor White
 Write-Host ""
 Write-Host '  $env:ORT_DYLIB_PATH = "$PWD\onnxruntime.dll"' -ForegroundColor Yellow
-Write-Host '  .\target\release\onnx-http.exe' -ForegroundColor Yellow
+Write-Host '  .\target\release\onnx-http.exe              # CPU mode (default)' -ForegroundColor Yellow
+Write-Host '  .\target\release\onnx-http.exe --npu         # NPU mode (Snapdragon)' -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Other options:" -ForegroundColor White
+Write-Host '  .\target\release\onnx-http.exe --port 9000   # Custom port' -ForegroundColor Yellow
+Write-Host '  .\target\release\onnx-http.exe --help        # Show all options' -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Then test with:" -ForegroundColor White
 Write-Host ""

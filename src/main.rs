@@ -9,7 +9,70 @@ use axum::Router;
 use tokio::net::TcpListener;
 use tracing::info;
 
-fn init_ort_and_model() -> anyhow::Result<std::sync::Arc<model::OnnxModel>> {
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ExecutionProvider {
+    Cpu,
+    Npu,
+}
+
+fn print_usage() {
+    eprintln!("Usage: onnx-http [OPTIONS]");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  --npu       Use QNN NPU execution provider (with CPU fallback)");
+    eprintln!("  --cpu       Use CPU execution provider only (default)");
+    eprintln!("  --port N    Server listen port (default: 8901, or PORT env var)");
+    eprintln!("  --help      Show this help message");
+    eprintln!();
+    eprintln!("Environment variables:");
+    eprintln!("  ORT_DYLIB_PATH  Path to onnxruntime.dll (v1.24.x)");
+    eprintln!("  PORT            Server listen port (overridden by --port)");
+    eprintln!("  RUST_LOG        Log level (trace, debug, info, warn, error)");
+}
+
+struct CliArgs {
+    provider: ExecutionProvider,
+    port: String,
+}
+
+fn parse_args() -> anyhow::Result<CliArgs> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut provider = ExecutionProvider::Cpu;
+    let mut port: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--npu" => provider = ExecutionProvider::Npu,
+            "--cpu" => provider = ExecutionProvider::Cpu,
+            "--port" => {
+                i += 1;
+                if i >= args.len() {
+                    anyhow::bail!("--port requires a value");
+                }
+                port = Some(args[i].clone());
+            }
+            "--help" | "-h" => {
+                print_usage();
+                std::process::exit(0);
+            }
+            other => {
+                eprintln!("Unknown option: {other}");
+                print_usage();
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
+    let port = port.unwrap_or_else(|| {
+        std::env::var("PORT").unwrap_or_else(|_| "8901".to_string())
+    });
+
+    Ok(CliArgs { provider, port })
+}
+
+fn init_ort_and_model(provider: ExecutionProvider) -> anyhow::Result<std::sync::Arc<model::OnnxModel>> {
     let model_path = PathBuf::from("models/model.onnx");
     let tokenizer_path = PathBuf::from("models/tokenizer.json");
 
@@ -41,10 +104,13 @@ fn init_ort_and_model() -> anyhow::Result<std::sync::Arc<model::OnnxModel>> {
         .commit();
     info!("ONNX Runtime loaded successfully");
 
-    model::OnnxModel::load(&model_path, &tokenizer_path)
+    let use_qnn = provider == ExecutionProvider::Npu;
+    model::OnnxModel::load(&model_path, &tokenizer_path, use_qnn)
 }
 
 fn main() -> anyhow::Result<()> {
+    let cli = parse_args()?;
+
     tracing_subscriber::fmt()
         .with_target(false)
         .with_env_filter(
@@ -53,8 +119,10 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    info!("Execution provider: {:?}", cli.provider);
+
     // Load model BEFORE starting tokio runtime
-    let model = init_ort_and_model()?;
+    let model = init_ort_and_model(cli.provider)?;
     info!("Model and tokenizer loaded successfully");
 
     tokio::runtime::Builder::new_multi_thread()
@@ -66,8 +134,7 @@ fn main() -> anyhow::Result<()> {
                 .route("/health", get(routes::health))
                 .with_state(model);
 
-            let port = std::env::var("PORT").unwrap_or_else(|_| "8901".to_string());
-            let addr = format!("0.0.0.0:{port}");
+            let addr = format!("0.0.0.0:{}", cli.port);
             info!("Starting ONNX embedding server on http://{addr}");
             let listener = TcpListener::bind(&addr).await?;
             axum::serve(listener, app).await?;
