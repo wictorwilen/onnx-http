@@ -63,7 +63,9 @@ if (-not (Test-Path $LogDir)) {
 
 # --- Remove existing service if present ---
 
+$ErrorActionPreference = "Continue"
 $existingCheck = nssm status $ServiceName 2>&1
+$ErrorActionPreference = "Stop"
 if ($existingCheck -match "SERVICE_") {
     Write-Host ""
     Write-Host "Service '$ServiceName' already exists (status: $existingCheck). Reinstalling..." -ForegroundColor Yellow
