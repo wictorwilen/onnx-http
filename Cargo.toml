@@ -2,6 +2,9 @@
 name = "onnx-http"
 version = "0.1.0"
 edition = "2021"
+authors = ["Wictor Wilén"]
+license = "MIT"
+description = "ONNX embedding server with NPU acceleration"
 
 [dependencies]
 axum = "0.7"

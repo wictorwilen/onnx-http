@@ -16,6 +16,9 @@ enum ExecutionProvider {
 }
 
 fn print_usage() {
+    eprintln!("onnx-http — ONNX Embedding Server");
+    eprintln!("Made with ❤️ by Wictor Wilén");
+    eprintln!();
     eprintln!("Usage: onnx-http [OPTIONS]");
     eprintln!();
     eprintln!("Options:");
@@ -119,6 +122,7 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    info!("onnx-http — Made with \u{2764}\u{FE0F} by Wictor Wilén");
     info!("Execution provider: {:?}", cli.provider);
 
     // Load model BEFORE starting tokio runtime

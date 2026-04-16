@@ -1,28 +1,30 @@
-# onnx-http
+# onnx-http 🚀
 
-A Rust-based HTTP server that loads an ONNX embedding model ([all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)), runs inference via ONNX Runtime with optional NPU acceleration (QNNExecutionProvider), and exposes an OpenAI-compatible `/v1/embeddings` endpoint. Designed to run natively on **Windows ARM64** (Snapdragon) and serve embedding requests from WSL, scripts, or any HTTP client.
+A Rust-based HTTP server that loads any ONNX embedding model, runs inference via ONNX Runtime with optional NPU acceleration (QNNExecutionProvider), and exposes an OpenAI-compatible `/v1/embeddings` endpoint. Designed to run natively on **Windows ARM64** (Snapdragon) and serve embedding requests from WSL, scripts, or any HTTP client.
 
-## Features
+> 📌 This project ships with setup instructions for [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) as the default model, but you can use **any ONNX model** that outputs hidden states in shape `[batch, sequence_length, hidden_dim]` — just drop your `model.onnx` and matching `tokenizer.json` into the `models/` folder.
 
-- **384-dimensional sentence embeddings** using all-MiniLM-L6-v2
-- **ONNX Runtime** inference with dynamic library loading
-- **NPU acceleration** via QNNExecutionProvider (opt-in, for Snapdragon devices)
-- **CPU fallback** — works on any Windows machine
-- **Single and batch** embedding requests
-- **OpenAI-compatible** `/v1/embeddings` response format
-- **Structured logging** via `tracing`
-- **Health check** endpoint at `/health`
+## ✨ Features
 
-## Prerequisites
+- 🧠 **Sentence embeddings** — 384-dim vectors out of the box with all-MiniLM-L6-v2
+- ⚡ **NPU acceleration** via QNNExecutionProvider (opt-in, for Snapdragon devices)
+- 🖥️ **CPU fallback** — works on any Windows machine
+- 📦 **Single and batch** embedding requests
+- 🔌 **OpenAI-compatible** `/v1/embeddings` response format
+- 📝 **Structured logging** via `tracing`
+- 💚 **Health check** endpoint at `/health`
+- 🔄 **Bring your own model** — swap in any ONNX embedding model
+
+## 📋 Prerequisites
 
 | Requirement | Details |
 |-------------|---------|
-| **Rust** (stable 1.75+) | [Install via rustup](https://rustup.rs/) |
-| **Python 3.x** | For downloading model files (one-time setup) |
-| **ONNX Runtime 1.24.x** | DLL downloaded automatically by setup script |
-| **C++ Build Tools** | Required by Rust linker — install via [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
+| 🦀 **Rust** (stable 1.75+) | [Install via rustup](https://rustup.rs/) |
+| 🐍 **Python 3.x** | For downloading model files (one-time setup) |
+| 📦 **ONNX Runtime 1.24.x** | DLL downloaded automatically by setup script |
+| 🔧 **C++ Build Tools** | Required by Rust linker — install via [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
 
-## Quick Start (Automated)
+## 🏁 Quick Start (Automated)
 
 The easiest way to get everything set up is with the included setup script:
 
@@ -45,7 +47,7 @@ $env:ORT_DYLIB_PATH = "$PWD\onnxruntime.dll"
 .\target\release\onnx-http.exe --npu     # NPU mode (Snapdragon)
 ```
 
-## Manual Setup
+## 🔧 Manual Setup
 
 If you prefer to set things up step by step:
 
@@ -58,7 +60,7 @@ cd onnx-http
 
 ### 2. Download the ONNX model
 
-The server uses [sentence-transformers/all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), a purpose-built sentence embedding model that produces 384-dimensional vectors.
+The setup script and examples use [sentence-transformers/all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) as the default model. You can substitute any ONNX embedding model — just place your `model.onnx` and `tokenizer.json` in the `models/` folder.
 
 ```powershell
 # Install the HuggingFace Hub Python package
@@ -149,7 +151,7 @@ You should see output like:
 2026-04-15T20:00:01Z  INFO Starting ONNX embedding server on http://0.0.0.0:8901
 ```
 
-## API Reference
+## 📡 API Reference
 
 ### `POST /v1/embeddings`
 
@@ -207,7 +209,7 @@ curl http://localhost:8901/health
 {"status": "ok"}
 ```
 
-## WSL ↔ Windows Interop
+## 🔗 WSL ↔ Windows Interop
 
 The server binds to `0.0.0.0:8901`, making it accessible from WSL via `localhost`:
 
@@ -239,7 +241,7 @@ for item in data["data"]:
     print(f"[{item['index']}] {len(item['embedding'])} dims, first 3: {item['embedding'][:3]}")
 ```
 
-## Configuration
+## ⚙️ Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -256,7 +258,7 @@ for item in data["data"]:
 | `--port N` | Server listen port (overrides `PORT` env var) |
 | `--help` | Show help message |
 
-### NPU acceleration (Snapdragon devices)
+### 🚀 NPU acceleration (Snapdragon devices)
 
 If you have a Qualcomm Snapdragon device with NPU, the setup script automatically downloads the QNN-enabled ONNX Runtime build (from the `Microsoft.ML.OnnxRuntime.QNN` NuGet package), which includes all required QNN DLLs.
 
@@ -269,7 +271,7 @@ The server will attempt QNNExecutionProvider first, falling back to CPU if unava
 
 > **Note:** The first launch with `--npu` takes significantly longer (1-2 minutes) as QNN compiles and optimizes the model graph for the NPU. Subsequent launches are faster.
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 onnx-http/
@@ -286,7 +288,7 @@ onnx-http/
     └── routes.rs        # HTTP handlers: POST /v1/embeddings, GET /health
 ```
 
-## How It Works
+## 🔬 How It Works
 
 1. **Startup:** Loads the ONNX Runtime DLL via `ort::init_from()` *before* starting the async Tokio runtime (avoids a known deadlock in the `ort` crate's dynamic loading)
 2. **Model loading:** Creates an ONNX Runtime session from `models/model.onnx` and a HuggingFace tokenizer from `models/tokenizer.json`
@@ -297,7 +299,7 @@ onnx-http/
    - Applies mean pooling with attention mask over the hidden states
    - Returns 384-dimensional embedding vectors
 
-## Dependencies
+## 📦 Dependencies
 
 | Crate | Purpose |
 |-------|---------|
@@ -312,7 +314,7 @@ onnx-http/
 
 > **Note:** The `ort` crate is pinned to the git `main` branch (not the crates.io release) because v2.0.0-rc.12 has a [deadlock bug (#560)](https://github.com/pykeio/ort/issues/560) in the `load-dynamic` feature that causes hangs on startup.
 
-## Troubleshooting
+## 🔍 Troubleshooting
 
 ### Server hangs on startup
 
@@ -343,7 +345,7 @@ Get-Process -Name "onnx-http" -ErrorAction SilentlyContinue | Stop-Process -Forc
 
 ### QNN execution provider not available
 
-QNN is opt-in (`USE_QNN=1`). Without it, the server uses CPU. If you enable QNN but don't have the QNN SDK installed, the server falls back to CPU gracefully.
+QNN is opt-in (`--npu`). Without it, the server uses CPU. If you enable QNN but the QNN-enabled ORT build isn't installed, the server falls back to CPU gracefully.
 
 ### WSL cannot reach the server
 
@@ -351,10 +353,18 @@ QNN is opt-in (`USE_QNN=1`). Without it, the server uses CPU. If you enable QNN 
 - Check Windows Firewall isn't blocking port 8901
 - On older WSL 1 versions, use the Windows host IP instead of `localhost`
 
-### Wrong embedding dimensions
+### 🔄 Using a different model
 
-If you're using a different ONNX model, ensure it outputs hidden states in shape `[batch, sequence_length, hidden_dim]`. The server applies mean pooling over the sequence dimension.
+You can use any ONNX model that outputs hidden states in shape `[batch, sequence_length, hidden_dim]`. Just replace `models/model.onnx` and `models/tokenizer.json` with your model's files. The server applies mean pooling over the sequence dimension to produce the final embedding vectors.
 
-## License
+## 📄 License
 
-MIT
+MIT — see [LICENSE.md](LICENSE.md)
+
+## ⚠️ Disclaimer
+
+This is a personal open‑source project. It is not affiliated with, endorsed by, or an official product of Microsoft. Any internal experimentation does not imply product adoption.
+
+---
+
+Made with ❤️ by Wictor Wilén
