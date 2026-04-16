@@ -63,14 +63,16 @@ if (-not (Test-Path $LogDir)) {
 
 # --- Remove existing service if present ---
 
-$existing = nssm status $ServiceName 2>&1
-if ($LASTEXITCODE -eq 0) {
+$existingCheck = nssm status $ServiceName 2>&1
+if ($existingCheck -match "SERVICE_") {
     Write-Host ""
-    Write-Host "Service '$ServiceName' already exists (status: $existing). Reinstalling..." -ForegroundColor Yellow
+    Write-Host "Service '$ServiceName' already exists (status: $existingCheck). Reinstalling..." -ForegroundColor Yellow
     nssm stop $ServiceName 2>&1 | Out-Null
     Start-Sleep -Seconds 2
     nssm remove $ServiceName confirm 2>&1 | Out-Null
     Write-Host "  Removed existing service" -ForegroundColor DarkGray
+} else {
+    Write-Host "✅ No existing service to remove" -ForegroundColor Green
 }
 
 # --- Prompt for execution provider ---
