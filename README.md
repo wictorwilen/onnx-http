@@ -85,20 +85,26 @@ models/
 
 ### 3. Download ONNX Runtime 1.24.x
 
-The `ort` crate requires ONNX Runtime **1.24.x**. Download the correct build for your platform:
+The `ort` crate requires ONNX Runtime **1.24.x**. For NPU support on ARM64, use the QNN-enabled build from NuGet:
 
-| Platform | Download |
-|----------|----------|
-| **Windows ARM64** (Snapdragon) | [onnxruntime-win-arm64x-1.24.4.zip](https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-arm64x-1.24.4.zip) |
-| **Windows x64** | [onnxruntime-win-x64-1.24.4.zip](https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip) |
-
-Extract `onnxruntime.dll` from the `lib/` folder inside the zip and place it in the project root:
+**ARM64 with NPU support (recommended for Snapdragon):**
 
 ```powershell
-# Example for ARM64
-Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-arm64x-1.24.4.zip" -OutFile ort.zip
+# Download QNN-enabled ORT from NuGet (includes all QNN DLLs)
+Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.QNN/1.24.4" -OutFile ort-qnn.zip
+Expand-Archive ort-qnn.zip -DestinationPath ort-extract
+Copy-Item ort-extract\runtimes\win-arm64\native\*.dll .
+Remove-Item ort-qnn.zip, ort-extract -Recurse
+```
+
+This gives you `onnxruntime.dll` plus QNN DLLs (`QnnHtp.dll`, `QnnGpu.dll`, `QnnCpu.dll`, `QnnSystem.dll`, etc.).
+
+**x64 (CPU only):**
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-win-x64-1.24.4.zip" -OutFile ort.zip
 Expand-Archive ort.zip -DestinationPath ort-extract
-Copy-Item ort-extract\onnxruntime-win-arm64x-1.24.4\lib\onnxruntime.dll .
+Copy-Item ort-extract\onnxruntime-win-x64-1.24.4\lib\onnxruntime.dll .
 Remove-Item ort.zip, ort-extract -Recurse
 ```
 
@@ -260,6 +266,8 @@ $env:ORT_DYLIB_PATH = "$PWD\onnxruntime.dll"
 ```
 
 The server will attempt QNNExecutionProvider first, falling back to CPU if unavailable.
+
+> **Note:** The first launch with `--npu` takes significantly longer (1-2 minutes) as QNN compiles and optimizes the model graph for the NPU. Subsequent launches are faster.
 
 ## Project Structure
 

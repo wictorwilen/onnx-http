@@ -8,3 +8,4 @@ ort-*/
 ort_extracted/
 stderr.log
 stdout.log
+*.log
