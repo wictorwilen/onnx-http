@@ -357,6 +357,33 @@ QNN is opt-in (`--npu`). Without it, the server uses CPU. If you enable QNN but 
 
 You can use any ONNX model that outputs hidden states in shape `[batch, sequence_length, hidden_dim]`. Just replace `models/model.onnx` and `models/tokenizer.json` with your model's files. The server applies mean pooling over the sequence dimension to produce the final embedding vectors.
 
+## 🪟 Running as a Windows Service
+
+You can install onnx-http as a Windows Service that starts automatically on boot using [NSSM](https://nssm.cc/):
+
+```powershell
+# Run as Administrator
+.\install-service.ps1
+```
+
+The script will:
+1. Install NSSM via `winget` if not present
+2. Ask whether to use NPU or CPU mode
+3. Register the service with auto-start, log rotation, and auto-restart on failure
+4. Start the service immediately
+
+**Manage the service:**
+
+```powershell
+nssm status onnx-http          # Check status
+nssm stop onnx-http            # Stop
+nssm start onnx-http           # Start
+nssm restart onnx-http         # Restart
+nssm remove onnx-http confirm  # Uninstall
+```
+
+Service logs are written to the `logs/` directory in the project root.
+
 ## 📄 License
 
 MIT — see [LICENSE.md](LICENSE.md)

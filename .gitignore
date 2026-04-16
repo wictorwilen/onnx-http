@@ -17,6 +17,7 @@ ort_extracted/
 
 # Logs
 *.log
+logs/
 
 # IDE / Editor
 .vscode/

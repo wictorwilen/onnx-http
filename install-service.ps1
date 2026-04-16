@@ -1,0 +1,151 @@
+# install-service.ps1 — Install onnx-http as a Windows Service using NSSM
+# Run this script as Administrator.
+
+#Requires -RunAsAdministrator
+
+$ErrorActionPreference = "Stop"
+
+$ServiceName = "onnx-http"
+$ProjectDir = $PSScriptRoot
+$ExePath = Join-Path $ProjectDir "target\release\onnx-http.exe"
+$OrtDll = Join-Path $ProjectDir "onnxruntime.dll"
+$LogDir = Join-Path $ProjectDir "logs"
+
+Write-Host ""
+Write-Host "====================================" -ForegroundColor Cyan
+Write-Host "  onnx-http Service Installer" -ForegroundColor Cyan
+Write-Host "  Made with ❤️ by Wictor Wilén" -ForegroundColor Cyan
+Write-Host "====================================" -ForegroundColor Cyan
+Write-Host ""
+
+# --- Check prerequisites ---
+
+# Check NSSM
+if (-not (Get-Command nssm -ErrorAction SilentlyContinue)) {
+    Write-Host "NSSM not found. Installing via winget..." -ForegroundColor Yellow
+    winget install nssm --accept-package-agreements --accept-source-agreements
+    # Refresh PATH
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    if (-not (Get-Command nssm -ErrorAction SilentlyContinue)) {
+        Write-Host "ERROR: NSSM still not found after install. Add it to PATH and retry." -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "✅ NSSM found: $(Get-Command nssm | Select-Object -ExpandProperty Source)" -ForegroundColor Green
+
+# Check binary
+if (-not (Test-Path $ExePath)) {
+    Write-Host "ERROR: Binary not found at $ExePath" -ForegroundColor Red
+    Write-Host "  Run 'cargo build --release' first, or run setup.ps1" -ForegroundColor Yellow
+    exit 1
+}
+Write-Host "✅ Binary: $ExePath" -ForegroundColor Green
+
+# Check ORT DLL
+if (-not (Test-Path $OrtDll)) {
+    Write-Host "ERROR: onnxruntime.dll not found at $OrtDll" -ForegroundColor Red
+    Write-Host "  Run setup.ps1 to download it" -ForegroundColor Yellow
+    exit 1
+}
+Write-Host "✅ ORT DLL: $OrtDll" -ForegroundColor Green
+
+# Check model files
+if (-not (Test-Path (Join-Path $ProjectDir "models\model.onnx"))) {
+    Write-Host "ERROR: models\model.onnx not found. Run setup.ps1 first." -ForegroundColor Red
+    exit 1
+}
+Write-Host "✅ Model files present" -ForegroundColor Green
+
+# Create log directory
+if (-not (Test-Path $LogDir)) {
+    New-Item -ItemType Directory -Path $LogDir | Out-Null
+}
+
+# --- Remove existing service if present ---
+
+$existing = nssm status $ServiceName 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host ""
+    Write-Host "Service '$ServiceName' already exists (status: $existing). Reinstalling..." -ForegroundColor Yellow
+    nssm stop $ServiceName 2>&1 | Out-Null
+    Start-Sleep -Seconds 2
+    nssm remove $ServiceName confirm 2>&1 | Out-Null
+    Write-Host "  Removed existing service" -ForegroundColor DarkGray
+}
+
+# --- Prompt for execution provider ---
+
+Write-Host ""
+$useNpu = Read-Host "Enable NPU acceleration? (y/N)"
+if ($useNpu -eq "y" -or $useNpu -eq "Y") {
+    $appArgs = "--npu"
+    Write-Host "  Using: --npu (QNN NPU with CPU fallback)" -ForegroundColor Cyan
+} else {
+    $appArgs = "--cpu"
+    Write-Host "  Using: --cpu" -ForegroundColor Cyan
+}
+
+# --- Install service ---
+
+Write-Host ""
+Write-Host "Installing service..." -ForegroundColor Yellow
+
+nssm install $ServiceName $ExePath
+nssm set $ServiceName AppParameters $appArgs
+nssm set $ServiceName AppDirectory $ProjectDir
+nssm set $ServiceName AppEnvironmentExtra "ORT_DYLIB_PATH=$OrtDll"
+
+# Display name and description
+nssm set $ServiceName DisplayName "ONNX Embedding Server"
+nssm set $ServiceName Description "onnx-http: ONNX Runtime embedding server with optional NPU acceleration"
+
+# Auto-start on boot
+nssm set $ServiceName Start SERVICE_AUTO_START
+
+# Logging
+nssm set $ServiceName AppStdout (Join-Path $LogDir "stdout.log")
+nssm set $ServiceName AppStderr (Join-Path $LogDir "stderr.log")
+nssm set $ServiceName AppRotateFiles 1
+nssm set $ServiceName AppRotateBytes 10485760  # 10 MB
+
+# Restart on failure
+nssm set $ServiceName AppExit Default Restart
+nssm set $ServiceName AppRestartDelay 5000  # 5 seconds
+
+Write-Host "✅ Service installed" -ForegroundColor Green
+
+# --- Start service ---
+
+Write-Host ""
+Write-Host "Starting service..." -ForegroundColor Yellow
+nssm start $ServiceName
+Start-Sleep -Seconds 5
+
+$status = nssm status $ServiceName 2>&1
+if ($status -match "SERVICE_RUNNING") {
+    Write-Host "✅ Service is running!" -ForegroundColor Green
+} else {
+    Write-Host "⚠️  Service status: $status" -ForegroundColor Yellow
+    Write-Host "  Check logs at: $LogDir" -ForegroundColor Yellow
+}
+
+# --- Summary ---
+
+Write-Host ""
+Write-Host "====================================" -ForegroundColor Cyan
+Write-Host "  Service Installed!" -ForegroundColor Cyan
+Write-Host "====================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Service name:  $ServiceName" -ForegroundColor White
+Write-Host "  Endpoint:      http://localhost:8901/v1/embeddings" -ForegroundColor White
+Write-Host "  Health check:  http://localhost:8901/health" -ForegroundColor White
+Write-Host "  Logs:          $LogDir" -ForegroundColor White
+Write-Host ""
+Write-Host "Manage the service:" -ForegroundColor White
+Write-Host "  nssm status $ServiceName        # Check status" -ForegroundColor Yellow
+Write-Host "  nssm stop $ServiceName          # Stop" -ForegroundColor Yellow
+Write-Host "  nssm start $ServiceName         # Start" -ForegroundColor Yellow
+Write-Host "  nssm restart $ServiceName       # Restart" -ForegroundColor Yellow
+Write-Host "  nssm remove $ServiceName confirm  # Uninstall" -ForegroundColor Yellow
+Write-Host "  services.msc                      # Windows Services UI" -ForegroundColor Yellow
+Write-Host ""
