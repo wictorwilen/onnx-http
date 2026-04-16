@@ -1,11 +1,34 @@
-/target
+# Build artifacts
+/target/
+
+# ONNX model files (large, downloaded via setup.ps1)
 models/*.onnx
 models/*.json
 !models/.gitkeep
+
+# ONNX Runtime and QNN DLLs (downloaded via setup.ps1)
 *.dll
+
+# Downloaded archives and extracted dirs
 *.zip
+*.nupkg
 ort-*/
 ort_extracted/
-stderr.log
-stdout.log
+
+# Logs
 *.log
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Rust
+**/*.rs.bk
