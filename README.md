@@ -25,26 +25,34 @@ A Rust-based HTTP server that loads any ONNX embedding model, runs inference via
 | 📦 **ONNX Runtime 1.24.x** | DLL downloaded automatically by setup script |
 | 🔧 **C++ Build Tools** | Required by Rust linker — install via [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
 
-## 🏁 Quick Start (Automated)
+## 🏁 Quick Start
 
-The easiest way to get everything set up is with the included setup script:
+### One-line install
+
+```powershell
+irm https://raw.githubusercontent.com/wictorwilen/onnx-http/main/install.ps1 | iex
+```
+
+This will clone the repo to `C:\onnx-http`, download ONNX Runtime, build the project, download the default model, and optionally install as a Windows Service.
+
+> Set `$env:ONNX_HTTP_DIR` before running to install to a different directory.
+
+### Local setup (if you already cloned the repo)
 
 ```powershell
 .\setup.ps1
 ```
 
 This will:
-1. Check that Rust and Python are installed
-2. Download the **all-MiniLM-L6-v2** ONNX model and tokenizer from HuggingFace
-3. Download **ONNX Runtime 1.24.4** for Windows ARM64
-4. Build the project in release mode
-5. Show you the exact command to start the server
+1. Check that Rust is installed
+2. Download **ONNX Runtime 1.24.4** for your architecture
+3. Build the project in release mode
+4. Download the **all-MiniLM-L6-v2** embedding model
 
-Then download a model and start the server:
+Then start the server:
 
 ```powershell
 $env:ORT_DYLIB_PATH = "$PWD\onnxruntime.dll"
-.\target\release\onnx-http.exe download all-MiniLM-L6-v2   # Download a model
 .\target\release\onnx-http.exe                              # Start server (CPU)
 .\target\release\onnx-http.exe --npu                        # Start server (NPU)
 ```

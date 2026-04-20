@@ -50,11 +50,21 @@ if (-not (Test-Path $OrtDll)) {
 Write-Host "✅ ORT DLL: $OrtDll" -ForegroundColor Green
 
 # Check model files
-if (-not (Test-Path (Join-Path $ProjectDir "models\model.onnx"))) {
-    Write-Host "ERROR: models\model.onnx not found. Run setup.ps1 first." -ForegroundColor Red
+$modelsDir = Join-Path $ProjectDir "models"
+$hasModels = $false
+if (Test-Path $modelsDir) {
+    $modelDirs = Get-ChildItem $modelsDir -Directory | Where-Object {
+        (Test-Path (Join-Path $_.FullName "model.onnx")) -and (Test-Path (Join-Path $_.FullName "tokenizer.json"))
+    }
+    if ($modelDirs.Count -gt 0) {
+        $hasModels = $true
+        Write-Host ("✅ Models installed: " + ($modelDirs.Name -join ", ")) -ForegroundColor Green
+    }
+}
+if (-not $hasModels) {
+    Write-Host "ERROR: No models found. Run 'onnx-http.exe download <model>' first." -ForegroundColor Red
     exit 1
 }
-Write-Host "✅ Model files present" -ForegroundColor Green
 
 # Create log directory
 if (-not (Test-Path $LogDir)) {
