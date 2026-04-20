@@ -14,8 +14,15 @@ pub struct OnnxModel {
 impl OnnxModel {
     pub fn load(model_path: &Path, tokenizer_path: &Path, use_qnn: bool) -> anyhow::Result<Arc<Self>> {
         info!("Loading tokenizer from {}", tokenizer_path.display());
-        let tokenizer = Tokenizer::from_file(tokenizer_path)
+        let mut tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {e}"))?;
+
+        // Enable truncation to the model's max sequence length (512 for BERT-style models).
+        // Without this, inputs longer than 512 tokens cause ONNX shape mismatch errors.
+        tokenizer.with_truncation(Some(tokenizers::TruncationParams {
+            max_length: 512,
+            ..Default::default()
+        })).map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
 
         info!("Loading ONNX model from {}", model_path.display());
 
