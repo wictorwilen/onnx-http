@@ -3,7 +3,9 @@
 
 # ONNX model files (large, downloaded via onnx-http download)
 models/*/model.onnx
+models/*/model.onnx_data
 models/*/tokenizer.json
+models/*/model_config.json
 !models/.gitkeep
 
 # ONNX Runtime and QNN DLLs (downloaded via setup.ps1)
@@ -33,3 +35,5 @@ Desktop.ini
 
 # Rust
 **/*.rs.bk
+
+/target2/

@@ -54,9 +54,6 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
     let attention_mask_tensor =
         Tensor::from_array((vec![batch_size, max_len], attention_mask_vec.clone().into_boxed_slice()))
             .map_err(|e| anyhow::anyhow!("Failed to create attention_mask tensor: {e}"))?;
-    let token_type_ids_tensor =
-        Tensor::from_array((vec![batch_size, max_len], token_type_ids_vec.into_boxed_slice()))
-            .map_err(|e| anyhow::anyhow!("Failed to create token_type_ids tensor: {e}"))?;
 
     // Run ONNX inference and extract output while session lock is held
     let (shape, hidden_data) = {
@@ -64,13 +61,23 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
             .session
             .lock()
             .map_err(|e| anyhow::anyhow!("Failed to lock session: {e}"))?;
-        let outputs = session
-            .run(ort::inputs![
+
+        let outputs = if model.has_token_type_ids {
+            let token_type_ids_tensor =
+                Tensor::from_array((vec![batch_size, max_len], token_type_ids_vec.into_boxed_slice()))
+                    .map_err(|e| anyhow::anyhow!("Failed to create token_type_ids tensor: {e}"))?;
+            session.run(ort::inputs![
                 "input_ids" => input_ids_tensor,
                 "attention_mask" => attention_mask_tensor,
                 "token_type_ids" => token_type_ids_tensor,
             ])
-            .map_err(|e| anyhow::anyhow!("ONNX inference failed: {e}"))?;
+        } else {
+            session.run(ort::inputs![
+                "input_ids" => input_ids_tensor,
+                "attention_mask" => attention_mask_tensor,
+            ])
+        }
+        .map_err(|e| anyhow::anyhow!("ONNX inference failed: {e}"))?;
 
         let (out_shape, out_data) = outputs[0]
             .try_extract_tensor::<f32>()

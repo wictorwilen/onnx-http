@@ -9,22 +9,27 @@ use tracing::{info, warn};
 pub struct OnnxModel {
     pub session: Mutex<Session>,
     pub tokenizer: Tokenizer,
+    /// Whether this model accepts token_type_ids as input
+    pub has_token_type_ids: bool,
 }
 
 impl OnnxModel {
     pub fn load(model_path: &Path, tokenizer_path: &Path, use_qnn: bool) -> anyhow::Result<Arc<Self>> {
+        // Read per-model max_tokens from model_config.json, default to 512
+        let max_tokens = Self::read_max_tokens(model_path.parent().unwrap_or(model_path));
+
         info!("Loading tokenizer from {}", tokenizer_path.display());
         let mut tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {e}"))?;
 
-        // Enable truncation to the model's max sequence length (512 for BERT-style models).
-        // Without this, inputs longer than 512 tokens cause ONNX shape mismatch errors.
+        // Enable truncation to the model's max sequence length.
+        // Without this, inputs longer than max_tokens cause ONNX shape mismatch errors.
         tokenizer.with_truncation(Some(tokenizers::TruncationParams {
-            max_length: 512,
+            max_length: max_tokens,
             ..Default::default()
         })).map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
 
-        info!("Loading ONNX model from {}", model_path.display());
+        info!("Loading ONNX model from {} (max_tokens={})", model_path.display(), max_tokens);
 
         let mut builder = Session::builder()
             .map_err(|e| anyhow::anyhow!("Failed to create session builder: {e}"))?;
@@ -50,12 +55,41 @@ impl OnnxModel {
             .iter()
             .map(|i| i.name().to_string())
             .collect();
-        info!("Model loaded. Input names: {:?}", input_names);
+        let has_token_type_ids = input_names.iter().any(|n| n == "token_type_ids");
+        info!("Model loaded. Input names: {:?}, has_token_type_ids: {}", input_names, has_token_type_ids);
 
         Ok(Arc::new(Self {
             session: Mutex::new(session),
             tokenizer,
+            has_token_type_ids,
         }))
+    }
+
+    /// Read max_tokens from model_config.json in the model directory, default 512.
+    fn read_max_tokens(model_dir: &Path) -> usize {
+        let config_path = model_dir.join("model_config.json");
+        if let Ok(contents) = std::fs::read_to_string(&config_path) {
+            // Simple JSON parsing for {"max_tokens": N}
+            if let Some(pos) = contents.find("\"max_tokens\"") {
+                let rest = &contents[pos..];
+                if let Some(colon) = rest.find(':') {
+                    let after_colon = rest[colon + 1..].trim();
+                    if let Some(end) = after_colon.find(|c: char| !c.is_ascii_digit()) {
+                        if let Ok(v) = after_colon[..end].trim().parse::<usize>() {
+                            if v > 0 {
+                                info!("Model config: max_tokens={} from {}", v, config_path.display());
+                                return v;
+                            }
+                        }
+                    } else if let Ok(v) = after_colon.trim_end().parse::<usize>() {
+                        if v > 0 {
+                            return v;
+                        }
+                    }
+                }
+            }
+        }
+        512
     }
 }
 

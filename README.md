@@ -6,7 +6,7 @@ A Rust-based HTTP server that loads any ONNX embedding model, runs inference via
 
 ## ✨ Features
 
-- 🧠 **Sentence embeddings** — 384-dim vectors out of the box with all-MiniLM-L6-v2
+- 🧠 **Sentence embeddings** — 384 to 1024-dim vectors, with models supporting up to 8K tokens
 - 🔀 **Multi-model support** — load multiple models and select per request
 - ⚡ **NPU acceleration** via QNNExecutionProvider (opt-in, for Snapdragon devices)
 - 🖥️ **CPU fallback** — works on any Windows machine
@@ -85,14 +85,17 @@ The built-in downloader fetches models directly from HuggingFace:
 
 Available models:
 
-| Name | Dims | Description |
-|------|------|-------------|
-| `all-MiniLM-L6-v2` | 384 | Fast, lightweight general-purpose embeddings |
-| `all-MiniLM-L12-v2` | 384 | Better quality than L6, still fast |
-| `all-mpnet-base-v2` | 768 | Best all-around sentence-transformers model |
-| `bge-base-en-v1.5` | 768 | Top retrieval/search quality, great for documents |
-| `bge-large-en-v1.5` | 1024 | Highest quality BGE model, 1024 dimensions |
-| `multi-qa-mpnet-base-cos-v1` | 768 | Trained for semantic search and QA |
+| Name | Dims | Max Tokens | Description |
+|------|------|------------|-------------|
+| `all-MiniLM-L6-v2` | 384 | 512 | Fast, lightweight general-purpose embeddings |
+| `all-MiniLM-L12-v2` | 384 | 512 | Better quality than L6, still fast |
+| `all-mpnet-base-v2` | 768 | 512 | Best all-around sentence-transformers model |
+| `bge-base-en-v1.5` | 768 | 512 | Top retrieval/search quality, great for documents |
+| `bge-large-en-v1.5` | 1024 | 512 | Highest quality BGE model, 1024 dimensions |
+| `bge-m3` | 1024 | 8,192 | 8K context, multilingual, dense+sparse retrieval (2.3GB) |
+| `jina-embeddings-v2-small-en` | 512 | 8,192 | 8K context, lightweight English embeddings (130MB) |
+| `embeddinggemma-300m` | 768 | 2,048 | Google Gemma, 2K context, multilingual (1.2GB) |
+| `multi-qa-mpnet-base-cos-v1` | 768 | 512 | Trained for semantic search and QA |
 
 After downloading, your `models/` directory will look like:
 
@@ -235,7 +238,7 @@ curl http://localhost:8901/v1/embeddings \
 }
 ```
 
-Each embedding is a 384-dimensional float vector.
+The embedding dimensions depend on the model (384 for MiniLM, 512 for Jina, 768 for BGE/mpnet, 1024 for BGE-large/M3).
 
 **Error response (400):**
 

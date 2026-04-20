@@ -27,14 +27,24 @@ pub async fn download_model(name: &str) -> anyhow::Result<()> {
     std::fs::create_dir_all(&dest_dir)?;
 
     eprintln!(
-        "📥 Downloading '{}' ({} dims) — {}",
-        entry.name, entry.dimensions, entry.description
+        "📥 Downloading '{}' ({} dims, {}K tokens) — {}",
+        entry.name, entry.dimensions, entry.max_tokens / 1000, entry.description
     );
     eprintln!("   Source: huggingface.co/{}", entry.repo);
     eprintln!();
 
     download_hf_file(entry, entry.onnx_path, &model_path).await?;
     download_hf_file(entry, entry.tokenizer_path, &tokenizer_path).await?;
+
+    // Download extra files (e.g., model.onnx_data for large models)
+    for (remote_path, local_name) in entry.extra_files {
+        let dest = dest_dir.join(local_name);
+        download_hf_file(entry, remote_path, &dest).await?;
+    }
+
+    // Write model_config.json with per-model settings
+    let config = format!("{{\"max_tokens\": {}}}\n", entry.max_tokens);
+    std::fs::write(dest_dir.join("model_config.json"), config)?;
 
     eprintln!();
     eprintln!("✅ Model '{}' installed to {}", entry.name, dest_dir.display());
@@ -100,18 +110,18 @@ pub fn print_catalog() {
     eprintln!("Available models:");
     eprintln!();
     eprintln!(
-        "  {:<30} {:>6}  {}",
-        "NAME", "DIMS", "DESCRIPTION"
+        "  {:<30} {:>6} {:>8}  {}",
+        "NAME", "DIMS", "TOKENS", "DESCRIPTION"
     );
-    eprintln!("  {}", "─".repeat(78));
+    eprintln!("  {}", "─".repeat(86));
 
     let models_dir = PathBuf::from("models");
     for entry in catalog::CATALOG {
         let installed = models_dir.join(entry.name).join("model.onnx").exists();
         let marker = if installed { " ✓" } else { "" };
         eprintln!(
-            "  {:<30} {:>6}  {}{}",
-            entry.name, entry.dimensions, entry.description, marker
+            "  {:<30} {:>6} {:>8}  {}{}",
+            entry.name, entry.dimensions, entry.max_tokens, entry.description, marker
         );
     }
 
@@ -148,10 +158,10 @@ pub fn print_installed() {
     eprintln!("Installed models:");
     eprintln!();
     eprintln!(
-        "  {:<30} {:>6}  {}",
-        "NAME", "DIMS", "SOURCE"
+        "  {:<30} {:>6} {:>8}  {}",
+        "NAME", "DIMS", "TOKENS", "SOURCE"
     );
-    eprintln!("  {}", "─".repeat(68));
+    eprintln!("  {}", "─".repeat(76));
 
     for entry in &entries {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -161,11 +171,15 @@ pub fn print_installed() {
             .map(|e| format!("{}", e.dimensions))
             .unwrap_or_else(|| "?".to_string());
 
+        let tokens = catalog_entry
+            .map(|e| format!("{}", e.max_tokens))
+            .unwrap_or_else(|| "?".to_string());
+
         let source = catalog_entry
             .map(|e| format!("huggingface.co/{}", e.repo))
             .unwrap_or_else(|| "custom".to_string());
 
-        eprintln!("  {:<30} {:>6}  {}", name, dims, source);
+        eprintln!("  {:<30} {:>6} {:>8}  {}", name, dims, tokens, source);
     }
 
     eprintln!();
