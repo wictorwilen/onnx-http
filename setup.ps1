@@ -1,5 +1,5 @@
 # setup.ps1 — Automated setup for onnx-http embedding server
-# Downloads model files, ONNX Runtime, and builds the project.
+# Downloads ONNX Runtime, builds the project, and downloads the default model.
 
 $ErrorActionPreference = "Stop"
 
@@ -11,7 +11,7 @@ Write-Host ""
 
 # --- Check prerequisites ---
 
-Write-Host "[1/5] Checking prerequisites..." -ForegroundColor Yellow
+Write-Host "[1/4] Checking prerequisites..." -ForegroundColor Yellow
 
 # Rust
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
@@ -21,51 +21,10 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 $rustVersion = (rustc --version) 2>&1
 Write-Host "  Rust: $rustVersion" -ForegroundColor Green
 
-# Python
-if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-    Write-Host "ERROR: Python not found. Install Python 3.x from https://python.org/" -ForegroundColor Red
-    exit 1
-}
-$pyVersion = (python --version) 2>&1
-Write-Host "  Python: $pyVersion" -ForegroundColor Green
-
-# --- Download model files ---
-
-Write-Host ""
-Write-Host "[2/5] Downloading model files (all-MiniLM-L6-v2)..." -ForegroundColor Yellow
-
-if (-not (Test-Path "models")) {
-    New-Item -ItemType Directory -Path "models" | Out-Null
-}
-
-# Install huggingface_hub if not present
-python -m pip install --quiet huggingface_hub 2>&1 | Out-Null
-
-if (-not (Test-Path "models\model.onnx")) {
-    Write-Host "  Downloading model.onnx (~90 MB)..."
-    python -c "from huggingface_hub import hf_hub_download; hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'onnx/model.onnx', local_dir='models', local_dir_use_symlinks=False)"
-    # The file downloads to models/onnx/model.onnx — move it up
-    if (Test-Path "models\onnx\model.onnx") {
-        Move-Item "models\onnx\model.onnx" "models\model.onnx" -Force
-        Remove-Item "models\onnx" -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Write-Host "  model.onnx downloaded" -ForegroundColor Green
-} else {
-    Write-Host "  model.onnx already exists, skipping" -ForegroundColor DarkGray
-}
-
-if (-not (Test-Path "models\tokenizer.json")) {
-    Write-Host "  Downloading tokenizer.json (~466 KB)..."
-    python -c "from huggingface_hub import hf_hub_download; hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'tokenizer.json', local_dir='models', local_dir_use_symlinks=False)"
-    Write-Host "  tokenizer.json downloaded" -ForegroundColor Green
-} else {
-    Write-Host "  tokenizer.json already exists, skipping" -ForegroundColor DarkGray
-}
-
 # --- Download ONNX Runtime ---
 
 Write-Host ""
-Write-Host "[3/5] Downloading ONNX Runtime 1.24.4..." -ForegroundColor Yellow
+Write-Host "[2/4] Downloading ONNX Runtime 1.24.4..." -ForegroundColor Yellow
 
 if (-not (Test-Path "onnxruntime.dll")) {
     # Detect architecture
@@ -122,7 +81,7 @@ if (-not (Test-Path "onnxruntime.dll")) {
 # --- Build ---
 
 Write-Host ""
-Write-Host "[4/5] Building project (release mode)..." -ForegroundColor Yellow
+Write-Host "[3/4] Building project (release mode)..." -ForegroundColor Yellow
 
 # Kill any running instance that might lock the exe
 $running = Get-Process -Name "onnx-http" -ErrorAction SilentlyContinue
@@ -140,6 +99,21 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "  Build succeeded" -ForegroundColor Green
 
+# --- Download default model ---
+
+Write-Host ""
+Write-Host "[4/4] Downloading default model (all-MiniLM-L6-v2)..." -ForegroundColor Yellow
+
+if (Test-Path "models\all-MiniLM-L6-v2\model.onnx") {
+    Write-Host "  all-MiniLM-L6-v2 already installed, skipping" -ForegroundColor DarkGray
+} else {
+    .\target\release\onnx-http.exe download all-MiniLM-L6-v2
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Model download failed!" -ForegroundColor Red
+        exit 1
+    }
+}
+
 # --- Done ---
 
 Write-Host ""
@@ -147,18 +121,23 @@ Write-Host "====================================" -ForegroundColor Cyan
 Write-Host "  Setup Complete!" -ForegroundColor Cyan
 Write-Host "====================================" -ForegroundColor Cyan
 Write-Host ""
+Write-Host "Installed models:" -ForegroundColor White
+.\target\release\onnx-http.exe models
+Write-Host ""
+Write-Host "Download additional models:" -ForegroundColor White
+Write-Host ""
+Write-Host '  .\target\release\onnx-http.exe download --list              # See available models' -ForegroundColor Yellow
+Write-Host '  .\target\release\onnx-http.exe download bge-base-en-v1.5    # Download a model' -ForegroundColor Yellow
+Write-Host ""
 Write-Host "To start the server:" -ForegroundColor White
 Write-Host ""
 Write-Host '  $env:ORT_DYLIB_PATH = "$PWD\onnxruntime.dll"' -ForegroundColor Yellow
 Write-Host '  .\target\release\onnx-http.exe              # CPU mode (default)' -ForegroundColor Yellow
 Write-Host '  .\target\release\onnx-http.exe --npu         # NPU mode (Snapdragon)' -ForegroundColor Yellow
 Write-Host ""
-Write-Host "Other options:" -ForegroundColor White
-Write-Host '  .\target\release\onnx-http.exe --port 9000   # Custom port' -ForegroundColor Yellow
-Write-Host '  .\target\release\onnx-http.exe --help        # Show all options' -ForegroundColor Yellow
-Write-Host ""
 Write-Host "Then test with:" -ForegroundColor White
 Write-Host ""
 Write-Host '  curl http://localhost:8901/health' -ForegroundColor Yellow
-Write-Host '  curl http://localhost:8901/v1/embeddings -H "Content-Type: application/json" -d "{\"input\": \"hello\"}"' -ForegroundColor Yellow
+Write-Host '  curl http://localhost:8901/v1/models' -ForegroundColor Yellow
+Write-Host '  curl http://localhost:8901/v1/embeddings -H "Content-Type: application/json" -d "{\"model\": \"all-MiniLM-L6-v2\", \"input\": \"hello\"}"' -ForegroundColor Yellow
 Write-Host ""

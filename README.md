@@ -2,15 +2,16 @@
 
 A Rust-based HTTP server that loads any ONNX embedding model, runs inference via ONNX Runtime with optional NPU acceleration (QNNExecutionProvider), and exposes an OpenAI-compatible `/v1/embeddings` endpoint. Designed to run natively on **Windows ARM64** (Snapdragon) and serve embedding requests from WSL, scripts, or any HTTP client.
 
-> 📌 This project ships with setup instructions for [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) as the default model, but you can use **any ONNX model** that outputs hidden states in shape `[batch, sequence_length, hidden_dim]` — just drop your `model.onnx` and matching `tokenizer.json` into the `models/` folder.
+> 📌 This project ships with setup instructions for [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) as the default model, but you can load **multiple ONNX models** simultaneously — just create a subdirectory per model under `models/` with a `model.onnx` and matching `tokenizer.json`.
 
 ## ✨ Features
 
 - 🧠 **Sentence embeddings** — 384-dim vectors out of the box with all-MiniLM-L6-v2
+- 🔀 **Multi-model support** — load multiple models and select per request
 - ⚡ **NPU acceleration** via QNNExecutionProvider (opt-in, for Snapdragon devices)
 - 🖥️ **CPU fallback** — works on any Windows machine
 - 📦 **Single and batch** embedding requests
-- 🔌 **OpenAI-compatible** `/v1/embeddings` response format
+- 🔌 **OpenAI-compatible** `/v1/embeddings` and `/v1/models` endpoints
 - 📝 **Structured logging** via `tracing`
 - 💚 **Health check** endpoint at `/health`
 - 🔄 **Bring your own model** — swap in any ONNX embedding model
@@ -39,12 +40,13 @@ This will:
 4. Build the project in release mode
 5. Show you the exact command to start the server
 
-Then start the server:
+Then download a model and start the server:
 
 ```powershell
 $env:ORT_DYLIB_PATH = "$PWD\onnxruntime.dll"
-.\target\release\onnx-http.exe           # CPU mode (default)
-.\target\release\onnx-http.exe --npu     # NPU mode (Snapdragon)
+.\target\release\onnx-http.exe download all-MiniLM-L6-v2   # Download a model
+.\target\release\onnx-http.exe                              # Start server (CPU)
+.\target\release\onnx-http.exe --npu                        # Start server (NPU)
 ```
 
 ## 🔧 Manual Setup
@@ -58,32 +60,68 @@ git clone <repo-url>
 cd onnx-http
 ```
 
-### 2. Download the ONNX model
+### 2. Download embedding models
 
-The setup script and examples use [sentence-transformers/all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) as the default model. You can substitute any ONNX embedding model — just place your `model.onnx` and `tokenizer.json` in the `models/` folder.
+The built-in downloader fetches models directly from HuggingFace:
 
 ```powershell
-# Install the HuggingFace Hub Python package
-pip install huggingface_hub
+# List available models
+.\target\release\onnx-http.exe download --list
 
-# Download model.onnx (~90 MB)
-python -c "from huggingface_hub import hf_hub_download; hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'onnx/model.onnx', local_dir='models', local_dir_use_symlinks=False)"
+# Download a model (e.g., all-MiniLM-L6-v2)
+.\target\release\onnx-http.exe download all-MiniLM-L6-v2
 
-# Download tokenizer.json (~466 KB)
-python -c "from huggingface_hub import hf_hub_download; hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'tokenizer.json', local_dir='models', local_dir_use_symlinks=False)"
-
-# The model downloads into models/onnx/model.onnx — move it up
-Move-Item models\onnx\model.onnx models\model.onnx
-Remove-Item models\onnx -Recurse
+# Download additional models
+.\target\release\onnx-http.exe download bge-base-en-v1.5
 ```
 
-After this step your `models/` directory should contain:
+Available models:
+
+| Name | Dims | Description |
+|------|------|-------------|
+| `all-MiniLM-L6-v2` | 384 | Fast, lightweight general-purpose embeddings |
+| `all-MiniLM-L12-v2` | 384 | Better quality than L6, still fast |
+| `all-mpnet-base-v2` | 768 | Best all-around sentence-transformers model |
+| `bge-base-en-v1.5` | 768 | Top retrieval/search quality, great for documents |
+| `bge-large-en-v1.5` | 1024 | Highest quality BGE model, 1024 dimensions |
+| `multi-qa-mpnet-base-cos-v1` | 768 | Trained for semantic search and QA |
+
+After downloading, your `models/` directory will look like:
 
 ```
 models/
-├── model.onnx        # ~90 MB ONNX model
-└── tokenizer.json    # ~466 KB HuggingFace tokenizer
+├── all-MiniLM-L6-v2/
+│   ├── model.onnx
+│   └── tokenizer.json
+└── bge-base-en-v1.5/
+    ├── model.onnx
+    └── tokenizer.json
 ```
+
+Then use any model in requests:
+
+```bash
+curl http://localhost:8901/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model": "bge-base-en-v1.5", "input": "Hello, world!"}'
+```
+
+<details>
+<summary>Manual download (without the CLI)</summary>
+
+You can also download models manually using Python:
+
+```powershell
+pip install huggingface_hub
+
+New-Item -ItemType Directory -Path "models\all-MiniLM-L6-v2" -Force
+python -c "from huggingface_hub import hf_hub_download; hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'onnx/model.onnx', local_dir='models/all-MiniLM-L6-v2', local_dir_use_symlinks=False)"
+python -c "from huggingface_hub import hf_hub_download; hf_hub_download('sentence-transformers/all-MiniLM-L6-v2', 'tokenizer.json', local_dir='models/all-MiniLM-L6-v2', local_dir_use_symlinks=False)"
+Move-Item models\all-MiniLM-L6-v2\onnx\model.onnx models\all-MiniLM-L6-v2\model.onnx
+Remove-Item models\all-MiniLM-L6-v2\onnx -Recurse
+```
+
+</details>
 
 ### 3. Download ONNX Runtime 1.24.x
 
@@ -162,7 +200,7 @@ Generate embeddings for one or more text inputs. Compatible with the OpenAI embe
 ```bash
 curl http://localhost:8901/v1/embeddings \
   -H "Content-Type: application/json" \
-  -d '{"input": "Hello, world!"}'
+  -d '{"model": "all-MiniLM-L6-v2", "input": "Hello, world!"}'
 ```
 
 **Batch input:**
@@ -170,7 +208,7 @@ curl http://localhost:8901/v1/embeddings \
 ```bash
 curl http://localhost:8901/v1/embeddings \
   -H "Content-Type: application/json" \
-  -d '{"input": ["Hello, world!", "How are you?", "Machine learning is great"]}'
+  -d '{"model": "all-MiniLM-L6-v2", "input": ["Hello, world!", "How are you?", "Machine learning is great"]}'
 ```
 
 **Response:**
@@ -199,6 +237,23 @@ Each embedding is a 384-dimensional float vector.
 }
 ```
 
+### `GET /v1/models`
+
+List all loaded models. Compatible with the OpenAI models API format.
+
+```bash
+curl http://localhost:8901/v1/models
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    { "id": "all-MiniLM-L6-v2", "object": "model", "owned_by": "local" }
+  ]
+}
+```
+
 ### `GET /health`
 
 ```bash
@@ -206,7 +261,7 @@ curl http://localhost:8901/health
 ```
 
 ```json
-{"status": "ok"}
+{"status": "ok", "models": ["all-MiniLM-L6-v2"]}
 ```
 
 ## 🔗 WSL ↔ Windows Interop
@@ -217,12 +272,12 @@ The server binds to `0.0.0.0:8901`, making it accessible from WSL via `localhost
 # From WSL — single embedding
 curl http://localhost:8901/v1/embeddings \
   -H "Content-Type: application/json" \
-  -d '{"input": "hello from WSL"}'
+  -d '{"model": "all-MiniLM-L6-v2", "input": "hello from WSL"}'
 
 # From WSL — batch of embeddings
 curl http://localhost:8901/v1/embeddings \
   -H "Content-Type: application/json" \
-  -d '{"input": ["sentence one", "sentence two", "sentence three"]}'
+  -d '{"model": "all-MiniLM-L6-v2", "input": ["sentence one", "sentence two", "sentence three"]}'
 ```
 
 No Windows-specific APIs are used — pure Rust networking. The standard WSL ↔ Windows localhost bridge works out of the box.
@@ -234,7 +289,7 @@ import requests
 
 response = requests.post(
     "http://localhost:8901/v1/embeddings",
-    json={"input": ["hello world", "how are you"]},
+    json={"model": "all-MiniLM-L6-v2", "input": ["hello world", "how are you"]},
 )
 data = response.json()
 for item in data["data"]:
@@ -247,6 +302,7 @@ for item in data["data"]:
 |----------|-------------|---------|
 | `ORT_DYLIB_PATH` | **Required.** Full path to `onnxruntime.dll` (v1.24.x) | Auto-detects next to exe |
 | `PORT` | Server listen port (overridden by `--port`) | `8901` |
+| `DEFAULT_MODEL` | Default model name (used when only one model loaded) | First alphabetically |
 | `RUST_LOG` | Log level (`trace`, `debug`, `info`, `warn`, `error`) | `info` |
 
 ### Command-line options
@@ -279,19 +335,22 @@ onnx-http/
 ├── setup.ps1            # Automated setup script
 ├── onnxruntime.dll      # ONNX Runtime 1.24.x (downloaded, not committed)
 ├── models/
-│   ├── model.onnx       # all-MiniLM-L6-v2 ONNX model (downloaded, not committed)
-│   └── tokenizer.json   # HuggingFace tokenizer (downloaded, not committed)
+│   └── all-MiniLM-L6-v2/
+│       ├── model.onnx       # ONNX model (downloaded, not committed)
+│       └── tokenizer.json   # HuggingFace tokenizer (downloaded, not committed)
 └── src/
-    ├── main.rs          # Server bootstrap: ORT init → model load → Axum server
-    ├── model.rs         # OnnxModel: wraps Mutex<Session> + Tokenizer
+    ├── main.rs          # Server bootstrap: ORT init → model registry → Axum server
+    ├── model.rs         # OnnxModel + ModelRegistry: loads and manages multiple models
+    ├── catalog.rs       # Known models catalog for the download command
+    ├── download.rs      # Model downloader: fetches from HuggingFace
     ├── embedding.rs     # Tokenization → tensor creation → ONNX inference → mean pooling
-    └── routes.rs        # HTTP handlers: POST /v1/embeddings, GET /health
+    └── routes.rs        # HTTP handlers: POST /v1/embeddings, GET /v1/models, GET /health
 ```
 
 ## 🔬 How It Works
 
 1. **Startup:** Loads the ONNX Runtime DLL via `ort::init_from()` *before* starting the async Tokio runtime (avoids a known deadlock in the `ort` crate's dynamic loading)
-2. **Model loading:** Creates an ONNX Runtime session from `models/model.onnx` and a HuggingFace tokenizer from `models/tokenizer.json`
+2. **Model loading:** Scans `models/` for subdirectories, each containing `model.onnx` and `tokenizer.json`. Loads all valid models into a `ModelRegistry`.
 3. **Request handling:** For each `/v1/embeddings` request:
    - Tokenizes input text(s) using the HuggingFace tokenizer
    - Builds padded tensors for `input_ids`, `attention_mask`, and `token_type_ids`
@@ -326,14 +385,16 @@ onnx-http/
 $env:ORT_DYLIB_PATH = "C:\code\onnx-http\onnxruntime.dll"
 ```
 
-### "Model file not found"
+### "Model not found"
 
-The server looks for `models/model.onnx` and `models/tokenizer.json` relative to the **working directory**. Always run the server from the project root:
+The server scans `models/` for subdirectories containing `model.onnx` and `tokenizer.json`. Make sure each model is in its own subdirectory. Always run the server from the project root:
 
 ```powershell
 cd C:\code\onnx-http
 .\target\release\onnx-http.exe
 ```
+
+Use `GET /v1/models` to see which models were loaded successfully.
 
 ### "Access is denied" when building
 
@@ -353,9 +414,9 @@ QNN is opt-in (`--npu`). Without it, the server uses CPU. If you enable QNN but 
 - Check Windows Firewall isn't blocking port 8901
 - On older WSL 1 versions, use the Windows host IP instead of `localhost`
 
-### 🔄 Using a different model
+### 🔄 Using additional models
 
-You can use any ONNX model that outputs hidden states in shape `[batch, sequence_length, hidden_dim]`. Just replace `models/model.onnx` and `models/tokenizer.json` with your model's files. The server applies mean pooling over the sequence dimension to produce the final embedding vectors.
+You can load any ONNX model that outputs hidden states in shape `[batch, sequence_length, hidden_dim]`. Create a new subdirectory under `models/` with `model.onnx` and `tokenizer.json`. The directory name becomes the model identifier used in API requests. The server applies mean pooling over the sequence dimension to produce the final embedding vectors.
 
 ## 🪟 Running as a Windows Service
 

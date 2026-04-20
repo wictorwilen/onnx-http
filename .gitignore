@@ -1,9 +1,9 @@
 # Build artifacts
 /target/
 
-# ONNX model files (large, downloaded via setup.ps1)
-models/*.onnx
-models/*.json
+# ONNX model files (large, downloaded via onnx-http download)
+models/*/model.onnx
+models/*/tokenizer.json
 !models/.gitkeep
 
 # ONNX Runtime and QNN DLLs (downloaded via setup.ps1)
