@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ort::session::Session;
@@ -35,10 +35,25 @@ impl OnnxModel {
             .map_err(|e| anyhow::anyhow!("Failed to create session builder: {e}"))?;
 
         if use_qnn {
-            info!("Execution providers: QNNExecutionProvider -> CPUExecutionProvider");
+            // Reduce CPU thread usage — the NPU does the heavy lifting
+            builder = builder
+                .with_intra_threads(1)
+                .map_err(|e| anyhow::anyhow!("Failed to set intra threads: {e}"))?
+                .with_inter_threads(1)
+                .map_err(|e| anyhow::anyhow!("Failed to set inter threads: {e}"))?;
+
+            // Resolve QnnHtp.dll path next to the executable
+            let htp_backend_path = Self::resolve_qnn_backend_path("QnnHtp.dll");
+            info!("Execution providers: QNNExecutionProvider (backend={}) -> CPUExecutionProvider", htp_backend_path.display());
+
             builder = builder
                 .with_execution_providers([
-                    ort::execution_providers::QNNExecutionProvider::default().build(),
+                    ort::execution_providers::QNNExecutionProvider::default()
+                        .with_backend_path(htp_backend_path.to_string_lossy())
+                        .with_performance_mode(ort::execution_providers::qnn::PerformanceMode::SustainedHighPerformance)
+                        .with_htp_fp16_precision(true)
+                        .with_htp_graph_finalization_optimization_mode(3)
+                        .build(),
                     ort::execution_providers::CPUExecutionProvider::default().build(),
                 ])
                 .map_err(|e| anyhow::anyhow!("Failed to set execution providers: {e}"))?;
@@ -63,6 +78,27 @@ impl OnnxModel {
             tokenizer,
             has_token_type_ids,
         }))
+    }
+
+    /// Resolve the path to a QNN backend DLL next to the executable.
+    fn resolve_qnn_backend_path(dll_name: &str) -> PathBuf {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let candidate = exe_dir.join(dll_name);
+        if candidate.exists() {
+            return candidate;
+        }
+        // Fall back to current directory
+        let cwd_candidate = PathBuf::from(dll_name);
+        if cwd_candidate.exists() {
+            return std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(dll_name);
+        }
+        // Return the name as-is, let QNN runtime resolve it
+        PathBuf::from(dll_name)
     }
 
     /// Read max_tokens from model_config.json in the model directory, default 512.
