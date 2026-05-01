@@ -1,6 +1,7 @@
 use ndarray::{Array2, Array3, Axis};
 use ort::value::Tensor;
-use tracing::debug;
+use std::time::Instant;
+use tracing::{debug, info};
 
 use crate::model::OnnxModel;
 
@@ -16,14 +17,17 @@ pub fn embed(model: &OnnxModel, text: &str) -> anyhow::Result<Vec<f32>> {
 
 /// Generate embeddings for a batch of text inputs.
 pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+    let total_start = Instant::now();
     let batch_size = texts.len();
     debug!("Embedding batch of {} text(s)", batch_size);
 
     // Tokenize all inputs
+    let tokenize_start = Instant::now();
     let encodings = model
         .tokenizer
         .encode_batch(texts.to_vec(), true)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {e}"))?;
+    let tokenize_ms = tokenize_start.elapsed().as_secs_f64() * 1000.0;
 
     // Find max sequence length for padding
     let max_len = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
@@ -56,9 +60,12 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
             .map_err(|e| anyhow::anyhow!("Failed to create attention_mask tensor: {e}"))?;
 
     // Run ONNX inference and extract output using a session from the pool
+    let inference_start = Instant::now();
     let (shape, hidden_data) = {
         let mut session = model.pool.acquire();
+        let acquire_ms = inference_start.elapsed().as_secs_f64() * 1000.0;
 
+        let run_start = Instant::now();
         let outputs = if model.has_token_type_ids {
             let token_type_ids_tensor =
                 Tensor::from_array((vec![batch_size, max_len], token_type_ids_vec.into_boxed_slice()))
@@ -75,12 +82,14 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
             ])
         }
         .map_err(|e| anyhow::anyhow!("ONNX inference failed: {e}"))?;
+        let run_ms = run_start.elapsed().as_secs_f64() * 1000.0;
 
         let (out_shape, out_data) = outputs[0]
             .try_extract_tensor::<f32>()
             .map_err(|e| anyhow::anyhow!("Failed to extract output tensor: {e}"))?;
         let shape: Vec<usize> = out_shape.iter().map(|&d| d as usize).collect();
         let data = out_data.to_vec();
+        debug!("Session acquire: {acquire_ms:.1}ms, inference: {run_ms:.1}ms");
         (shape, data)
     };
     debug!("Model output shape: {:?}", shape);
@@ -112,6 +121,12 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
         .outer_iter()
         .map(|row: ndarray::ArrayView1<f32>| row.to_vec())
         .collect();
+
+    let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
+    info!(
+        "Embedded {} text(s): tokenize={:.1}ms, inference={:.1}ms, total={:.1}ms",
+        batch_size, tokenize_ms, inference_start.elapsed().as_secs_f64() * 1000.0, total_ms
+    );
 
     Ok(result)
 }
