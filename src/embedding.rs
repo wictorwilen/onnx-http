@@ -28,6 +28,7 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
         .encode_batch(texts.to_vec(), true)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {e}"))?;
     let tokenize_ms = tokenize_start.elapsed().as_secs_f64() * 1000.0;
+    let total_tokens: usize = encodings.iter().map(|e| e.get_ids().len()).sum();
 
     // Find max sequence length for padding
     let max_len = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
@@ -122,10 +123,12 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
         .map(|row: ndarray::ArrayView1<f32>| row.to_vec())
         .collect();
 
+    let total_chars: usize = texts.iter().map(|t| t.len()).sum();
     let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
     info!(
-        "Embedded {} text(s): tokenize={:.1}ms, inference={:.1}ms, total={:.1}ms",
-        batch_size, tokenize_ms, inference_start.elapsed().as_secs_f64() * 1000.0, total_ms
+        "Embedded {} text(s) ({} chars, {} tokens, max_seq={}): tokenize={:.1}ms, inference={:.1}ms, total={:.1}ms",
+        batch_size, total_chars, total_tokens, max_len,
+        tokenize_ms, inference_start.elapsed().as_secs_f64() * 1000.0, total_ms
     );
 
     Ok(result)
