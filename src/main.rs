@@ -28,10 +28,11 @@ fn print_usage() {
     eprintln!("  onnx-http download --list        List available models to download");
     eprintln!();
     eprintln!("Server options:");
-    eprintln!("  --npu       Use QNN NPU execution provider (with CPU fallback)");
-    eprintln!("  --cpu       Use CPU execution provider only (default)");
-    eprintln!("  --port N    Server listen port (default: 8901, or PORT env var)");
-    eprintln!("  --help      Show this help message");
+    eprintln!("  --npu          Use QNN NPU execution provider (with CPU fallback)");
+    eprintln!("  --cpu          Use CPU execution provider only (default)");
+    eprintln!("  --port N       Server listen port (default: 8901, or PORT env var)");
+    eprintln!("  --pool-size N  Number of inference sessions per model (default: 2 NPU, 4 CPU)");
+    eprintln!("  --help         Show this help message");
     eprintln!();
     eprintln!("Model layout:");
     eprintln!("  Place each model in a subdirectory under models/:");
@@ -55,6 +56,7 @@ enum Command {
 struct ServeArgs {
     provider: ExecutionProvider,
     port: String,
+    pool_size: usize,
 }
 
 fn parse_args() -> anyhow::Result<Command> {
@@ -64,6 +66,7 @@ fn parse_args() -> anyhow::Result<Command> {
         return Ok(Command::Serve(ServeArgs {
             provider: ExecutionProvider::Cpu,
             port: std::env::var("PORT").unwrap_or_else(|_| "8901".to_string()),
+            pool_size: 0, // 0 = auto-detect
         }));
     }
 
@@ -82,6 +85,7 @@ fn parse_args() -> anyhow::Result<Command> {
     // Parse serve options
     let mut provider = ExecutionProvider::Cpu;
     let mut port: Option<String> = None;
+    let mut pool_size: usize = 0; // 0 = auto-detect
 
     let mut i = 0;
     while i < args.len() {
@@ -94,6 +98,17 @@ fn parse_args() -> anyhow::Result<Command> {
                     anyhow::bail!("--port requires a value");
                 }
                 port = Some(args[i].clone());
+            }
+            "--pool-size" => {
+                i += 1;
+                if i >= args.len() {
+                    anyhow::bail!("--pool-size requires a value");
+                }
+                pool_size = args[i].parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("--pool-size must be a positive integer"))?;
+                if pool_size == 0 {
+                    anyhow::bail!("--pool-size must be >= 1");
+                }
             }
             "--help" | "-h" => {
                 print_usage();
@@ -112,10 +127,10 @@ fn parse_args() -> anyhow::Result<Command> {
         std::env::var("PORT").unwrap_or_else(|_| "8901".to_string())
     });
 
-    Ok(Command::Serve(ServeArgs { provider, port }))
+    Ok(Command::Serve(ServeArgs { provider, port, pool_size }))
 }
 
-fn init_ort_and_registry(provider: ExecutionProvider) -> anyhow::Result<std::sync::Arc<model::ModelRegistry>> {
+fn init_ort_and_registry(provider: ExecutionProvider, pool_size: usize) -> anyhow::Result<std::sync::Arc<model::ModelRegistry>> {
     let models_dir = PathBuf::from("models");
 
     // Force load the correct ORT DLL before any ort API calls
@@ -134,7 +149,7 @@ fn init_ort_and_registry(provider: ExecutionProvider) -> anyhow::Result<std::syn
     info!("ONNX Runtime loaded successfully");
 
     let use_qnn = provider == ExecutionProvider::Npu;
-    model::ModelRegistry::load_all(&models_dir, use_qnn)
+    model::ModelRegistry::load_all(&models_dir, use_qnn, pool_size)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -167,8 +182,18 @@ fn main() -> anyhow::Result<()> {
             info!("onnx-http — Made with \u{2764}\u{FE0F} by Wictor Wilén");
             info!("Execution provider: {:?}", cli.provider);
 
+            // Auto-detect pool size: 2 for NPU, 4 for CPU
+            let pool_size = if cli.pool_size > 0 {
+                cli.pool_size
+            } else if cli.provider == ExecutionProvider::Npu {
+                2
+            } else {
+                4
+            };
+            info!("Session pool size: {}", pool_size);
+
             // Load models BEFORE starting tokio runtime
-            let registry = init_ort_and_registry(cli.provider)?;
+            let registry = init_ort_and_registry(cli.provider, pool_size)?;
 
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()

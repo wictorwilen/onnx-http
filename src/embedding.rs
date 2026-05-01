@@ -55,12 +55,9 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
         Tensor::from_array((vec![batch_size, max_len], attention_mask_vec.clone().into_boxed_slice()))
             .map_err(|e| anyhow::anyhow!("Failed to create attention_mask tensor: {e}"))?;
 
-    // Run ONNX inference and extract output while session lock is held
+    // Run ONNX inference and extract output using a session from the pool
     let (shape, hidden_data) = {
-        let mut session = model
-            .session
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Failed to lock session: {e}"))?;
+        let mut session = model.pool.acquire();
 
         let outputs = if model.has_token_type_ids {
             let token_type_ids_tensor =

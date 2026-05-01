@@ -6,15 +6,43 @@ use ort::session::Session;
 use tokenizers::Tokenizer;
 use tracing::{info, warn};
 
+/// A pool of ONNX sessions to allow concurrent inference.
+pub struct SessionPool {
+    sessions: Vec<Mutex<Session>>,
+}
+
+impl SessionPool {
+    fn new(sessions: Vec<Session>) -> Self {
+        Self {
+            sessions: sessions.into_iter().map(Mutex::new).collect(),
+        }
+    }
+
+    /// Acquire a session from the pool; tries non-blocking first, then blocks.
+    pub fn acquire(&self) -> std::sync::MutexGuard<'_, Session> {
+        for session in &self.sessions {
+            if let Ok(guard) = session.try_lock() {
+                return guard;
+            }
+        }
+        // All sessions busy — block on the first one
+        self.sessions[0].lock().expect("session mutex poisoned")
+    }
+
+    pub fn size(&self) -> usize {
+        self.sessions.len()
+    }
+}
+
 pub struct OnnxModel {
-    pub session: Mutex<Session>,
+    pub pool: SessionPool,
     pub tokenizer: Tokenizer,
     /// Whether this model accepts token_type_ids as input
     pub has_token_type_ids: bool,
 }
 
 impl OnnxModel {
-    pub fn load(model_path: &Path, tokenizer_path: &Path, use_qnn: bool) -> anyhow::Result<Arc<Self>> {
+    pub fn load(model_path: &Path, tokenizer_path: &Path, use_qnn: bool, pool_size: usize) -> anyhow::Result<Arc<Self>> {
         // Read per-model max_tokens from model_config.json, default to 512
         let max_tokens = Self::read_max_tokens(model_path.parent().unwrap_or(model_path));
 
@@ -29,27 +57,63 @@ impl OnnxModel {
             ..Default::default()
         })).map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
 
-        info!("Loading ONNX model from {} (max_tokens={})", model_path.display(), max_tokens);
+        info!("Loading ONNX model from {} (max_tokens={}, pool_size={})", model_path.display(), max_tokens, pool_size);
 
+        let htp_backend_path = if use_qnn {
+            Some(Self::resolve_qnn_backend_path("QnnHtp.dll"))
+        } else {
+            None
+        };
+
+        let mut sessions = Vec::with_capacity(pool_size);
+        for i in 0..pool_size {
+            let session = Self::build_session(model_path, use_qnn, htp_backend_path.as_deref())?;
+            if i == 0 {
+                let input_names: Vec<_> = session
+                    .inputs()
+                    .iter()
+                    .map(|n| n.name().to_string())
+                    .collect();
+                let has_tt = input_names.iter().any(|n| n == "token_type_ids");
+                info!("Model inputs: {:?}, has_token_type_ids: {}", input_names, has_tt);
+            }
+            sessions.push(session);
+            if pool_size > 1 {
+                info!("Session {}/{} created", i + 1, pool_size);
+            }
+        }
+
+        let has_token_type_ids = sessions[0]
+            .inputs()
+            .iter()
+            .any(|n| n.name() == "token_type_ids");
+
+        Ok(Arc::new(Self {
+            pool: SessionPool::new(sessions),
+            tokenizer,
+            has_token_type_ids,
+        }))
+    }
+
+    /// Build a single ONNX session with the given execution provider config.
+    fn build_session(model_path: &Path, use_qnn: bool, htp_backend_path: Option<&Path>) -> anyhow::Result<Session> {
         let mut builder = Session::builder()
             .map_err(|e| anyhow::anyhow!("Failed to create session builder: {e}"))?;
 
         if use_qnn {
-            // Reduce CPU thread usage — the NPU does the heavy lifting
+            let htp = htp_backend_path.expect("htp_backend_path required for QNN");
             builder = builder
                 .with_intra_threads(1)
                 .map_err(|e| anyhow::anyhow!("Failed to set intra threads: {e}"))?
                 .with_inter_threads(1)
                 .map_err(|e| anyhow::anyhow!("Failed to set inter threads: {e}"))?;
 
-            // Resolve QnnHtp.dll path next to the executable
-            let htp_backend_path = Self::resolve_qnn_backend_path("QnnHtp.dll");
-            info!("Execution providers: QNNExecutionProvider (backend={}) -> CPUExecutionProvider", htp_backend_path.display());
+            info!("Execution providers: QNNExecutionProvider (backend={}) -> CPUExecutionProvider", htp.display());
 
             builder = builder
                 .with_execution_providers([
                     ort::execution_providers::QNNExecutionProvider::default()
-                        .with_backend_path(htp_backend_path.to_string_lossy())
+                        .with_backend_path(htp.to_string_lossy())
                         .with_performance_mode(ort::execution_providers::qnn::PerformanceMode::SustainedHighPerformance)
                         .with_htp_fp16_precision(true)
                         .with_htp_graph_finalization_optimization_mode(3)
@@ -61,23 +125,9 @@ impl OnnxModel {
             info!("Execution provider: CPUExecutionProvider (use --npu to enable NPU)");
         }
 
-        let session = builder
+        builder
             .commit_from_file(model_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load model: {e}"))?;
-
-        let input_names: Vec<_> = session
-            .inputs()
-            .iter()
-            .map(|i| i.name().to_string())
-            .collect();
-        let has_token_type_ids = input_names.iter().any(|n| n == "token_type_ids");
-        info!("Model loaded. Input names: {:?}, has_token_type_ids: {}", input_names, has_token_type_ids);
-
-        Ok(Arc::new(Self {
-            session: Mutex::new(session),
-            tokenizer,
-            has_token_type_ids,
-        }))
+            .map_err(|e| anyhow::anyhow!("Failed to load model: {e}"))
     }
 
     /// Resolve the path to a QNN backend DLL next to the executable.
@@ -138,7 +188,7 @@ impl ModelRegistry {
     /// Scan the models directory and load all valid model subdirectories.
     /// Each subdirectory must contain `model.onnx` and `tokenizer.json`.
     /// Falls back to flat layout (`models/model.onnx`) as model named "default".
-    pub fn load_all(models_dir: &Path, use_qnn: bool) -> anyhow::Result<Arc<Self>> {
+    pub fn load_all(models_dir: &Path, use_qnn: bool, pool_size: usize) -> anyhow::Result<Arc<Self>> {
         let mut models = HashMap::new();
 
         // Try subdirectory layout first
@@ -165,7 +215,7 @@ impl ModelRegistry {
                     .to_string();
 
                 info!("Loading model '{name}' from {}", dir.display());
-                match OnnxModel::load(&model_path, &tokenizer_path, use_qnn) {
+                match OnnxModel::load(&model_path, &tokenizer_path, use_qnn, pool_size) {
                     Ok(model) => {
                         models.insert(name, model);
                     }
@@ -183,7 +233,7 @@ impl ModelRegistry {
 
             if model_path.exists() && tokenizer_path.exists() {
                 info!("Loading model 'default' from flat layout");
-                let model = OnnxModel::load(&model_path, &tokenizer_path, use_qnn)?;
+                let model = OnnxModel::load(&model_path, &tokenizer_path, use_qnn, pool_size)?;
                 models.insert("default".to_string(), model);
             }
         }

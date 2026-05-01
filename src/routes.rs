@@ -137,7 +137,21 @@ pub async fn embeddings(
 
     info!("Embedding request: model='{}', {} text(s)", model_name, texts.len());
 
-    let results = embedding::embed_batch(model, &texts).map_err(|e| {
+    let model = model.clone();
+    let results = tokio::task::spawn_blocking(move || {
+        embedding::embed_batch(&model, &texts)
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!("Spawn blocking failed: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Internal error: {e}"),
+            }),
+        )
+    })?
+    .map_err(|e| {
         tracing::error!("Embedding failed: {e}");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
