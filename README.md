@@ -9,6 +9,7 @@ A Rust-based HTTP server that loads any ONNX embedding model, runs inference via
 - 🧠 **Sentence embeddings** — 384 to 1024-dim vectors, with models supporting up to 8K tokens
 - 🔀 **Multi-model support** — load multiple models and select per request
 - ⚡ **NPU acceleration** via QNNExecutionProvider (opt-in, for Snapdragon devices)
+- 🔄 **Session pooling** — concurrent inference via `--pool-size` for higher throughput
 - 🖥️ **CPU fallback** — works on any Windows machine
 - 📦 **Single and batch** embedding requests
 - 🔌 **OpenAI-compatible** `/v1/embeddings` and `/v1/models` endpoints
@@ -323,6 +324,7 @@ for item in data["data"]:
 | `--npu` | Use QNN NPU execution provider (with CPU fallback) |
 | `--cpu` | Use CPU execution provider only (default) |
 | `--port N` | Server listen port (overrides `PORT` env var) |
+| `--pool-size N` | Number of inference sessions per model (default: 2 for NPU, 4 for CPU) |
 | `--help` | Show help message |
 
 ### 🚀 NPU acceleration (Snapdragon devices)
@@ -351,7 +353,7 @@ onnx-http/
 │       └── tokenizer.json   # HuggingFace tokenizer (downloaded, not committed)
 └── src/
     ├── main.rs          # Server bootstrap: ORT init → model registry → Axum server
-    ├── model.rs         # OnnxModel + ModelRegistry: loads and manages multiple models
+    ├── model.rs         # OnnxModel + SessionPool + ModelRegistry: loads and manages multiple models
     ├── catalog.rs       # Known models catalog for the download command
     ├── download.rs      # Model downloader: fetches from HuggingFace
     ├── embedding.rs     # Tokenization → tensor creation → ONNX inference → mean pooling
@@ -361,13 +363,13 @@ onnx-http/
 ## 🔬 How It Works
 
 1. **Startup:** Loads the ONNX Runtime DLL via `ort::init_from()` *before* starting the async Tokio runtime (avoids a known deadlock in the `ort` crate's dynamic loading)
-2. **Model loading:** Scans `models/` for subdirectories, each containing `model.onnx` and `tokenizer.json`. Loads all valid models into a `ModelRegistry`.
+2. **Model loading:** Scans `models/` for subdirectories, each containing `model.onnx` and `tokenizer.json`. Loads all valid models into a `ModelRegistry`. Each model creates a pool of ONNX sessions (`--pool-size`) to allow concurrent inference.
 3. **Request handling:** For each `/v1/embeddings` request:
    - Tokenizes input text(s) using the HuggingFace tokenizer
    - Builds padded tensors for `input_ids`, `attention_mask`, and `token_type_ids`
-   - Runs ONNX inference (thread-safe via `Mutex<Session>`)
+   - Runs ONNX inference on a session from the pool via `spawn_blocking` (avoids blocking the async runtime)
    - Applies mean pooling with attention mask over the hidden states
-   - Returns 384-dimensional embedding vectors
+   - Returns embedding vectors (dimensions depend on the model)
 
 ## 📦 Dependencies
 

@@ -215,6 +215,12 @@ if ($installService -eq "y" -or $installService -eq "Y") {
                 $appArgs = "--cpu"
             }
 
+            # Prompt for pool size
+            $poolInput = Read-Host "  Session pool size per model? (default: 2 for NPU, 4 for CPU)"
+            if ($poolInput -and $poolInput -match '^\d+$' -and [int]$poolInput -ge 1) {
+                $appArgs += " --pool-size $poolInput"
+            }
+
             Write-Host "  Installing service ($appArgs)..."
             nssm install $ServiceName $exe | Out-Null
             nssm set $ServiceName AppParameters $appArgs | Out-Null
