@@ -36,33 +36,43 @@ pub fn embed_batch(model: &OnnxModel, texts: &[String]) -> anyhow::Result<Vec<Ve
         return Err(anyhow::anyhow!("All inputs produced empty token sequences"));
     }
 
-    // Sort indices by token length to group similar-length texts
-    let mut sorted_indices: Vec<usize> = (0..batch_size).collect();
-    sorted_indices.sort_by_key(|&i| encodings[i].get_ids().len());
-
-    // Split into sub-batches: start a new group when longest > 2x shortest
-    let sub_batches = build_sub_batches(&sorted_indices, &encodings);
-    let num_sub_batches = sub_batches.len();
-
-    // Process each sub-batch and collect (original_index, embedding) pairs
     let mut all_results: Vec<(usize, Vec<f32>)> = Vec::with_capacity(batch_size);
     let mut total_inference_ms = 0.0f64;
+    let num_sub_batches;
 
-    for (sb_idx, sb_indices) in sub_batches.iter().enumerate() {
-        let sb_encodings: Vec<&Encoding> = sb_indices.iter().map(|&i| &encodings[i]).collect();
-        let sb_max_len = sb_encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
+    if model.static_shapes {
+        // Static-shape model: process one text at a time with fixed padding to max_tokens
+        num_sub_batches = batch_size;
+        for (i, encoding) in encodings.iter().enumerate() {
+            let inference_start = Instant::now();
+            let embeddings = run_inference(model, &[encoding], model.max_tokens)?;
+            total_inference_ms += inference_start.elapsed().as_secs_f64() * 1000.0;
+            all_results.push((i, embeddings.into_iter().next().unwrap()));
+        }
+    } else {
+        // Dynamic-shape model: sort by length and split into sub-batches
+        let mut sorted_indices: Vec<usize> = (0..batch_size).collect();
+        sorted_indices.sort_by_key(|&i| encodings[i].get_ids().len());
 
-        debug!(
-            "Sub-batch {}/{}: {} text(s), max_seq={}",
-            sb_idx + 1, num_sub_batches, sb_indices.len(), sb_max_len
-        );
+        let sub_batches = build_sub_batches(&sorted_indices, &encodings);
+        num_sub_batches = sub_batches.len();
 
-        let inference_start = Instant::now();
-        let embeddings = run_inference(model, &sb_encodings, sb_max_len)?;
-        total_inference_ms += inference_start.elapsed().as_secs_f64() * 1000.0;
+        for (sb_idx, sb_indices) in sub_batches.iter().enumerate() {
+            let sb_encodings: Vec<&Encoding> = sb_indices.iter().map(|&i| &encodings[i]).collect();
+            let sb_max_len = sb_encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
 
-        for (j, emb) in embeddings.into_iter().enumerate() {
-            all_results.push((sb_indices[j], emb));
+            debug!(
+                "Sub-batch {}/{}: {} text(s), max_seq={}",
+                sb_idx + 1, num_sub_batches, sb_indices.len(), sb_max_len
+            );
+
+            let inference_start = Instant::now();
+            let embeddings = run_inference(model, &sb_encodings, sb_max_len)?;
+            total_inference_ms += inference_start.elapsed().as_secs_f64() * 1000.0;
+
+            for (j, emb) in embeddings.into_iter().enumerate() {
+                all_results.push((sb_indices[j], emb));
+            }
         }
     }
 

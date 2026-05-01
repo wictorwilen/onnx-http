@@ -39,12 +39,15 @@ pub struct OnnxModel {
     pub tokenizer: Tokenizer,
     /// Whether this model accepts token_type_ids as input
     pub has_token_type_ids: bool,
+    /// Max sequence length for this model (used as fixed padding length for static-shape models)
+    pub max_tokens: usize,
+    /// Whether this model uses static shapes (batch=1, seq=max_tokens)
+    pub static_shapes: bool,
 }
 
 impl OnnxModel {
     pub fn load(model_path: &Path, tokenizer_path: &Path, use_qnn: bool, pool_size: usize) -> anyhow::Result<Arc<Self>> {
-        // Read per-model max_tokens from model_config.json, default to 512
-        let max_tokens = Self::read_max_tokens(model_path.parent().unwrap_or(model_path));
+        let (max_tokens, static_shapes) = Self::read_model_config(model_path.parent().unwrap_or(model_path));
 
         info!("Loading tokenizer from {}", tokenizer_path.display());
         let mut tokenizer = Tokenizer::from_file(tokenizer_path)
@@ -92,6 +95,8 @@ impl OnnxModel {
             pool: SessionPool::new(sessions),
             tokenizer,
             has_token_type_ids,
+            max_tokens,
+            static_shapes,
         }))
     }
 
@@ -151,11 +156,14 @@ impl OnnxModel {
         PathBuf::from(dll_name)
     }
 
-    /// Read max_tokens from model_config.json in the model directory, default 512.
-    fn read_max_tokens(model_dir: &Path) -> usize {
+    /// Read max_tokens and static_shapes from model_config.json in the model directory.
+    fn read_model_config(model_dir: &Path) -> (usize, bool) {
         let config_path = model_dir.join("model_config.json");
+        let mut max_tokens = 512usize;
+        let mut static_shapes = false;
+
         if let Ok(contents) = std::fs::read_to_string(&config_path) {
-            // Simple JSON parsing for {"max_tokens": N}
+            // Parse max_tokens
             if let Some(pos) = contents.find("\"max_tokens\"") {
                 let rest = &contents[pos..];
                 if let Some(colon) = rest.find(':') {
@@ -163,19 +171,23 @@ impl OnnxModel {
                     if let Some(end) = after_colon.find(|c: char| !c.is_ascii_digit()) {
                         if let Ok(v) = after_colon[..end].trim().parse::<usize>() {
                             if v > 0 {
-                                info!("Model config: max_tokens={} from {}", v, config_path.display());
-                                return v;
+                                max_tokens = v;
                             }
                         }
                     } else if let Ok(v) = after_colon.trim_end().parse::<usize>() {
                         if v > 0 {
-                            return v;
+                            max_tokens = v;
                         }
                     }
                 }
             }
+            // Parse static_shapes
+            if contents.contains("\"static_shapes\"") && contents.contains("true") {
+                static_shapes = true;
+            }
+            info!("Model config: max_tokens={}, static_shapes={} from {}", max_tokens, static_shapes, config_path.display());
         }
-        512
+        (max_tokens, static_shapes)
     }
 }
 

@@ -4,8 +4,11 @@
 # ONNX model files (large, downloaded via onnx-http download)
 models/*/model.onnx
 models/*/model.onnx_data
+models/*/model.onnx.data
 models/*/tokenizer.json
 models/*/model_config.json
+models/*/tokenizer_config.json
+models/*/special_tokens_map.json
 !models/.gitkeep
 
 # ONNX Runtime and QNN DLLs (downloaded via setup.ps1)
@@ -37,3 +40,6 @@ Desktop.ini
 **/*.rs.bk
 
 /target2/
+
+# Python dependencies for export script
+/pylibs/
