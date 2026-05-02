@@ -340,6 +340,53 @@ The server will attempt QNNExecutionProvider first, falling back to CPU if unava
 
 > **Note:** The first launch with `--npu` takes significantly longer (1-2 minutes) as QNN compiles and optimizes the model graph for the NPU. Subsequent launches are faster.
 
+### 🧪 Preparing models for full NPU utilization
+
+Standard HuggingFace ONNX models have **dynamic shapes** and use the **Erf** operator (exact GELU activation). Both are incompatible with QNN:
+
+| Issue | Symptom | Fix |
+|-------|---------|-----|
+| Dynamic shapes | "Cannot get shape" warnings, 0% NPU usage | Export with fixed `batch_size=1` and `seq_len` |
+| Erf operator | "QNN graph execute error 6002" | Replace GELU with tanh approximation before export |
+
+The included export script handles both automatically:
+
+```powershell
+# Install dependencies (one-time)
+pip install torch transformers onnx onnxsim
+
+# Export with static shapes + tanh GELU (QNN-compatible)
+python scripts/export_static_onnx.py \
+  --model BAAI/bge-base-en-v1.5 \
+  --seq-len 256 \
+  --output models/bge-base-en-v1.5-static
+
+python scripts/export_static_onnx.py \
+  --model sentence-transformers/all-MiniLM-L6-v2 \
+  --seq-len 256 \
+  --output models/all-MiniLM-L6-v2-static
+```
+
+The script will:
+1. Load the HuggingFace model
+2. Patch all GELU activations to use `tanh` approximation (eliminates Erf ops)
+3. Export ONNX with fixed `[1, seq_len]` input shapes (no dynamic axes)
+4. Simplify the graph with `onnxsim` to fold constants and remove Shape ops
+5. Verify zero Shape/Erf ops remain in the final model
+6. Save `tokenizer.json` and `model_config.json` (with `static_shapes: true`)
+
+**Choosing `--seq-len`:** This is the fixed input length for all inference. Texts shorter than this are zero-padded; texts longer are truncated. Use 256 for general-purpose (covers ~95% of inputs), or 128 for latency-sensitive workloads.
+
+**How to verify NPU is active:** After starting with `--npu` and a static model, check:
+- Task Manager → Performance → NPU should show utilization during requests
+- No "Cannot get shape" warnings in logs
+- No "QNN graph execute error" in logs
+
+**Compatible model architectures:** Any BERT-family encoder model works (BERT, RoBERTa, DistilBERT, BGE, MiniLM, E5, GTE, etc.). The key requirements are:
+- Pure encoder architecture (no decoder/cross-attention)
+- Attention + FFN layers with GELU activation
+- The export script automatically handles GELU → tanh patching
+
 ## 📁 Project Structure
 
 ```

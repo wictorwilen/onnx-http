@@ -1,13 +1,25 @@
 """
 Export a HuggingFace embedding model to ONNX with static shapes for QNN NPU compatibility.
 
-QNN EP cannot handle dynamic shapes (Shape ops with dynamic dims cause full CPU fallback).
-This script exports with fixed batch_size=1 and seq_len, then simplifies the graph
-to fold constants and remove Shape ops.
+QNN EP requires:
+  1. Static shapes — dynamic dims cause "Cannot get shape" warnings and full CPU fallback.
+  2. No Erf ops — QNN doesn't support Erf, which is used in exact GELU activation.
+     We replace GELU with the tanh approximation: GELU(x) ≈ 0.5*x*(1+tanh(√(2/π)*(x+0.044715*x³)))
+     This is numerically close and fully QNN-compatible.
+
+This script:
+  - Patches all GELU activations to use tanh approximation
+  - Exports with fixed batch_size=1 and seq_len (no dynamic_axes)
+  - Simplifies the graph to fold constants and remove Shape ops
+  - Verifies no Shape/Erf ops remain in the final model
+  - Saves tokenizer.json and model_config.json for the onnx-http server
 
 Usage:
-    python scripts/export_static_onnx.py --model BAAI/bge-base-en-v1.5 --seq-len 128 --output models/bge-base-en-v1.5-static
-    python scripts/export_static_onnx.py --model sentence-transformers/all-MiniLM-L6-v2 --seq-len 128 --output models/all-MiniLM-L6-v2-static
+    python scripts/export_static_onnx.py --model BAAI/bge-base-en-v1.5 --seq-len 256 --output models/bge-base-en-v1.5-static
+    python scripts/export_static_onnx.py --model sentence-transformers/all-MiniLM-L6-v2 --seq-len 256 --output models/all-MiniLM-L6-v2-static
+
+Requirements:
+    pip install torch transformers onnx onnxsim
 """
 
 import argparse
@@ -21,8 +33,44 @@ if os.path.isdir(pylibs):
     sys.path.insert(0, pylibs)
 
 import torch
+import torch.nn as nn
 import onnx
 from transformers import AutoModel, AutoTokenizer
+
+
+def replace_gelu_with_tanh_approx(model: nn.Module):
+    """
+    Recursively replace all GELU activations with the tanh approximation variant.
+    This eliminates Erf ops from the ONNX graph, which QNN EP cannot execute.
+    """
+    for name, module in model.named_children():
+        if isinstance(module, nn.GELU):
+            setattr(model, name, nn.GELU(approximate="tanh"))
+        else:
+            replace_gelu_with_tanh_approx(module)
+
+    # Also patch any functional gelu calls in intermediate modules
+    # by replacing the activation function references in known architectures
+    if hasattr(model, "intermediate") and hasattr(model.intermediate, "intermediate_act_fn"):
+        model.intermediate.intermediate_act_fn = nn.GELU(approximate="tanh")
+
+
+def patch_all_gelu(model: nn.Module):
+    """
+    Comprehensive GELU patching: handles both nn.GELU modules and functional gelu
+    references stored as activation functions in transformer layers.
+    """
+    replace_gelu_with_tanh_approx(model)
+
+    # Patch activation functions stored as callables (common in BERT/BGE models)
+    for module in model.modules():
+        if hasattr(module, "intermediate_act_fn"):
+            act = module.intermediate_act_fn
+            if callable(act) and not isinstance(act, nn.GELU):
+                # Replace function references to torch.nn.functional.gelu
+                module.intermediate_act_fn = nn.GELU(approximate="tanh")
+        if hasattr(module, "act_fn"):
+            module.act_fn = nn.GELU(approximate="tanh")
 
 
 def export_static(model_name: str, seq_len: int, output_dir: str, opset: int = 17):
@@ -32,6 +80,10 @@ def export_static(model_name: str, seq_len: int, output_dir: str, opset: int = 1
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name)
     model.eval()
+
+    # Replace GELU with tanh approximation to eliminate Erf ops for QNN
+    print("Patching GELU activations with tanh approximation (QNN-compatible)...")
+    patch_all_gelu(model)
 
     batch_size = 1
     dummy_input_ids = torch.randint(0, tokenizer.vocab_size, (batch_size, seq_len), dtype=torch.long)
@@ -104,20 +156,28 @@ def export_static(model_name: str, seq_len: int, output_dir: str, opset: int = 1
     else:
         print("WARNING: No tokenizer.json found - may need manual copy")
 
-    # Create model_config.json with fixed max_tokens
-    config = {"max_tokens": seq_len}
+    # Create model_config.json with fixed max_tokens and static_shapes flag
+    config = {"max_tokens": seq_len, "static_shapes": True}
     config_path = os.path.join(output_dir, "model_config.json")
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-    print(f"Config saved: {config_path} (max_tokens={seq_len})")
+    print(f"Config saved: {config_path} (max_tokens={seq_len}, static_shapes=true)")
 
     print(f"\nDone! Model exported to: {output_dir}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Export HuggingFace model to static-shape ONNX for QNN NPU")
+    parser = argparse.ArgumentParser(
+        description="Export HuggingFace embedding model to static-shape ONNX for QNN NPU",
+        epilog="""
+Examples:
+  python scripts/export_static_onnx.py --model BAAI/bge-base-en-v1.5 --seq-len 256 --output models/bge-base-en-v1.5-static
+  python scripts/export_static_onnx.py --model sentence-transformers/all-MiniLM-L6-v2 --seq-len 256 --output models/all-MiniLM-L6-v2-static
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--model", required=True, help="HuggingFace model name (e.g., BAAI/bge-base-en-v1.5)")
-    parser.add_argument("--seq-len", type=int, default=128, help="Fixed sequence length (default: 128)")
+    parser.add_argument("--seq-len", type=int, default=256, help="Fixed sequence length (default: 256)")
     parser.add_argument("--output", required=True, help="Output directory for the static ONNX model")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version (default: 17)")
     args = parser.parse_args()
