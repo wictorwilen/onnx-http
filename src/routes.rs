@@ -67,39 +67,75 @@ pub struct ModelInfo {
 
 // --- Handlers ---
 
-pub async fn health(State(registry): State<Arc<ModelRegistry>>) -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "ok",
-        models: registry.model_names().into_iter().cloned().collect(),
-    })
+pub async fn health(State(registry): State<Arc<ModelRegistry>>) -> impl IntoResponse {
+    if registry.is_ready() {
+        let body = HealthResponse {
+            status: "ok",
+            models: registry.model_names(),
+        };
+        (StatusCode::OK, Json(body)).into_response()
+    } else {
+        let body = HealthResponse {
+            status: "loading",
+            models: vec![],
+        };
+        (
+            StatusCode::OK,
+            [("Retry-After", "5")],
+            Json(body),
+        ).into_response()
+    }
 }
 
-pub async fn list_models(State(registry): State<Arc<ModelRegistry>>) -> Json<ModelsResponse> {
+pub async fn list_models(
+    State(registry): State<Arc<ModelRegistry>>,
+) -> Result<Json<ModelsResponse>, (StatusCode, [(&'static str, &'static str); 1], Json<ErrorResponse>)> {
+    if !registry.is_ready() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            [("Retry-After", "5")],
+            Json(ErrorResponse {
+                error: "Models are still loading, please retry shortly".into(),
+            }),
+        ));
+    }
+
     let data = registry
         .model_names()
         .into_iter()
         .map(|name| ModelInfo {
-            id: name.clone(),
+            id: name,
             object: "model",
             owned_by: "local",
         })
         .collect();
 
-    Json(ModelsResponse {
+    Ok(Json(ModelsResponse {
         object: "list",
         data,
-    })
+    }))
 }
 
 pub async fn embeddings(
     State(registry): State<Arc<ModelRegistry>>,
     Json(payload): Json<EmbeddingRequest>,
-) -> Result<Json<EmbeddingResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<EmbeddingResponse>, (StatusCode, [(&'static str, &'static str); 1], Json<ErrorResponse>)> {
+    if !registry.is_ready() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            [("Retry-After", "5")],
+            Json(ErrorResponse {
+                error: "Models are still loading, please retry shortly".into(),
+            }),
+        ));
+    }
+
     let model_name = payload.model;
 
     let model = registry.get(&model_name).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
+            [("Retry-After", "0")],
             Json(ErrorResponse {
                 error: format!(
                     "Model '{}' not found. Available models: {:?}",
@@ -115,6 +151,7 @@ pub async fn embeddings(
             if s.is_empty() {
                 return Err((
                     StatusCode::BAD_REQUEST,
+                    [("Retry-After", "0")],
                     Json(ErrorResponse {
                         error: "Input text must not be empty".into(),
                     }),
@@ -126,6 +163,7 @@ pub async fn embeddings(
             if v.is_empty() {
                 return Err((
                     StatusCode::BAD_REQUEST,
+                    [("Retry-After", "0")],
                     Json(ErrorResponse {
                         error: "Input batch must not be empty".into(),
                     }),
@@ -146,6 +184,7 @@ pub async fn embeddings(
         tracing::error!("Spawn blocking failed: {e}");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
+            [("Retry-After", "0")],
             Json(ErrorResponse {
                 error: format!("Internal error: {e}"),
             }),
@@ -155,6 +194,7 @@ pub async fn embeddings(
         tracing::error!("Embedding failed: {e}");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
+            [("Retry-After", "0")],
             Json(ErrorResponse {
                 error: format!("Embedding failed: {e}"),
             }),

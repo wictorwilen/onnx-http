@@ -130,10 +130,7 @@ fn parse_args() -> anyhow::Result<Command> {
     Ok(Command::Serve(ServeArgs { provider, port, pool_size }))
 }
 
-fn init_ort_and_registry(provider: ExecutionProvider, pool_size: usize) -> anyhow::Result<std::sync::Arc<model::ModelRegistry>> {
-    let models_dir = PathBuf::from("models");
-
-    // Force load the correct ORT DLL before any ort API calls
+fn init_ort(provider: ExecutionProvider) -> anyhow::Result<()> {
     let dylib_path = std::env::var("ORT_DYLIB_PATH")
         .unwrap_or_else(|_| {
             let exe_dir = std::env::current_exe()
@@ -147,9 +144,8 @@ fn init_ort_and_registry(provider: ExecutionProvider, pool_size: usize) -> anyho
         .map_err(|e| anyhow::anyhow!("Failed to init ORT from {dylib_path}: {e}"))?
         .commit();
     info!("ONNX Runtime loaded successfully");
-
-    let use_qnn = provider == ExecutionProvider::Npu;
-    model::ModelRegistry::load_all(&models_dir, use_qnn, pool_size)
+    let _ = provider; // used by caller for QNN config
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -192,13 +188,27 @@ fn main() -> anyhow::Result<()> {
             };
             info!("Session pool size: {}", pool_size);
 
-            // Load models BEFORE starting tokio runtime
-            let registry = init_ort_and_registry(cli.provider, pool_size)?;
+            // Load ORT DLL (fast) before starting runtime
+            init_ort(cli.provider)?;
+
+            // Create empty registry — server starts immediately
+            let registry = model::ModelRegistry::new_empty();
 
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?
                 .block_on(async {
+                    // Start loading models in background
+                    let registry_bg = registry.clone();
+                    let use_qnn = cli.provider == ExecutionProvider::Npu;
+                    let models_dir = PathBuf::from("models");
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = registry_bg.load_all_into(&models_dir, use_qnn, pool_size) {
+                            tracing::error!("Failed to load models: {e}");
+                            std::process::exit(1);
+                        }
+                    });
+
                     let app = Router::new()
                         .route("/v1/embeddings", post(routes::embeddings))
                         .route("/v1/models", get(routes::list_models))
@@ -207,6 +217,7 @@ fn main() -> anyhow::Result<()> {
 
                     let addr = format!("0.0.0.0:{}", cli.port);
                     info!("Starting ONNX embedding server on http://{addr}");
+                    info!("Health endpoint available immediately — models loading in background");
                     let listener = TcpListener::bind(&addr).await?;
                     axum::serve(listener, app).await?;
                     Ok::<(), anyhow::Error>(())

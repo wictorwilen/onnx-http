@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 use ort::session::Session;
 use tokenizers::Tokenizer;
@@ -192,16 +193,29 @@ impl OnnxModel {
 }
 
 pub struct ModelRegistry {
-    models: HashMap<String, Arc<OnnxModel>>,
-    default_model: String,
+    models: RwLock<HashMap<String, Arc<OnnxModel>>>,
+    default_model: RwLock<String>,
+    ready: AtomicBool,
 }
 
 impl ModelRegistry {
-    /// Scan the models directory and load all valid model subdirectories.
-    /// Each subdirectory must contain `model.onnx` and `tokenizer.json`.
-    /// Falls back to flat layout (`models/model.onnx`) as model named "default".
-    pub fn load_all(models_dir: &Path, use_qnn: bool, pool_size: usize) -> anyhow::Result<Arc<Self>> {
-        let mut models = HashMap::new();
+    /// Create an empty registry (server can start immediately).
+    pub fn new_empty() -> Arc<Self> {
+        Arc::new(Self {
+            models: RwLock::new(HashMap::new()),
+            default_model: RwLock::new(String::new()),
+            ready: AtomicBool::new(false),
+        })
+    }
+
+    /// Whether models have finished loading.
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Relaxed)
+    }
+
+    /// Load all models and mark registry as ready. Call from a background thread.
+    pub fn load_all_into(self: &Arc<Self>, models_dir: &Path, use_qnn: bool, pool_size: usize) -> anyhow::Result<()> {
+        let mut loaded = HashMap::new();
 
         // Try subdirectory layout first
         if models_dir.is_dir() {
@@ -229,7 +243,7 @@ impl ModelRegistry {
                 info!("Loading model '{name}' from {}", dir.display());
                 match OnnxModel::load(&model_path, &tokenizer_path, use_qnn, pool_size) {
                     Ok(model) => {
-                        models.insert(name, model);
+                        loaded.insert(name, model);
                     }
                     Err(e) => {
                         warn!("Failed to load model '{}': {e}", dir.display());
@@ -239,18 +253,18 @@ impl ModelRegistry {
         }
 
         // Backward compatibility: flat layout (models/model.onnx)
-        if models.is_empty() {
+        if loaded.is_empty() {
             let model_path = models_dir.join("model.onnx");
             let tokenizer_path = models_dir.join("tokenizer.json");
 
             if model_path.exists() && tokenizer_path.exists() {
                 info!("Loading model 'default' from flat layout");
                 let model = OnnxModel::load(&model_path, &tokenizer_path, use_qnn, pool_size)?;
-                models.insert("default".to_string(), model);
+                loaded.insert("default".to_string(), model);
             }
         }
 
-        if models.is_empty() {
+        if loaded.is_empty() {
             anyhow::bail!(
                 "No models found. Place model subdirectories in {} \
                  (each containing model.onnx and tokenizer.json).",
@@ -258,43 +272,54 @@ impl ModelRegistry {
             );
         }
 
-        // Default: use --default-model if set, otherwise first alphabetically
+        // Default: use DEFAULT_MODEL env var if set, otherwise first alphabetically
         let default_model = std::env::var("DEFAULT_MODEL").unwrap_or_else(|_| {
-            let mut names: Vec<_> = models.keys().cloned().collect();
+            let mut names: Vec<_> = loaded.keys().cloned().collect();
             names.sort();
             names[0].clone()
         });
 
-        if !models.contains_key(&default_model) {
+        if !loaded.contains_key(&default_model) {
             anyhow::bail!(
                 "Default model '{default_model}' not found. Available: {:?}",
-                models.keys().collect::<Vec<_>>()
+                loaded.keys().collect::<Vec<_>>()
             );
         }
 
         info!(
             "Loaded {} model(s): {:?} (default: '{}')",
-            models.len(),
-            models.keys().collect::<Vec<_>>(),
+            loaded.len(),
+            loaded.keys().collect::<Vec<_>>(),
             default_model
         );
 
-        Ok(Arc::new(Self {
-            models,
-            default_model,
-        }))
+        // Publish models atomically
+        {
+            let mut models = self.models.write().unwrap();
+            *models = loaded;
+        }
+        {
+            let mut dm = self.default_model.write().unwrap();
+            *dm = default_model;
+        }
+        self.ready.store(true, Ordering::Release);
+        info!("All models ready — accepting inference requests");
+
+        Ok(())
     }
 
-    pub fn get(&self, name: &str) -> Option<&Arc<OnnxModel>> {
-        self.models.get(name)
+    pub fn get(&self, name: &str) -> Option<Arc<OnnxModel>> {
+        let models = self.models.read().unwrap();
+        models.get(name).cloned()
     }
 
-    pub fn default_model_name(&self) -> &str {
-        &self.default_model
+    pub fn default_model_name(&self) -> String {
+        self.default_model.read().unwrap().clone()
     }
 
-    pub fn model_names(&self) -> Vec<&String> {
-        let mut names: Vec<_> = self.models.keys().collect();
+    pub fn model_names(&self) -> Vec<String> {
+        let models = self.models.read().unwrap();
+        let mut names: Vec<_> = models.keys().cloned().collect();
         names.sort();
         names
     }
