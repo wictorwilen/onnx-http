@@ -10,11 +10,13 @@ A Rust-based HTTP server that loads any ONNX embedding model, runs inference via
 - 🔀 **Multi-model support** — load multiple models and select per request
 - ⚡ **NPU acceleration** via QNNExecutionProvider (opt-in, for Snapdragon devices)
 - 🔄 **Session pooling** — concurrent inference via `--pool-size` for higher throughput
+- 🧩 **Smart batching** — auto-splits batches by token length to minimize padding waste
 - 🖥️ **CPU fallback** — works on any Windows machine
 - 📦 **Single and batch** embedding requests
 - 🔌 **OpenAI-compatible** `/v1/embeddings` and `/v1/models` endpoints
-- 📝 **Structured logging** via `tracing`
-- 💚 **Health check** endpoint at `/health`
+- 📝 **Structured logging** via `tracing` with timing instrumentation
+- 💚 **Health check** endpoint at `/health` — available immediately on startup
+- ⏳ **Graceful startup** — serves health checks while models load in background; returns `503 Retry-After` on inference endpoints until ready
 - 🔄 **Bring your own model** — swap in any ONNX embedding model
 
 ## 📋 Prerequisites
@@ -268,13 +270,24 @@ curl http://localhost:8901/v1/models
 
 ### `GET /health`
 
+Returns server health and readiness status. Available **immediately** on startup, even before models finish loading.
+
 ```bash
 curl http://localhost:8901/health
 ```
 
+**When ready:**
 ```json
-{"status": "ok", "models": ["all-MiniLM-L6-v2"]}
+{"status": "ok", "models": ["all-MiniLM-L6-v2", "bge-base-en-v1.5"]}
 ```
+
+**During model loading:**
+```json
+{"status": "loading", "models": []}
+```
+The response includes a `Retry-After: 5` header during loading.
+
+> **Note:** The health endpoint always returns HTTP 200. Use the `status` field to distinguish between `"loading"` and `"ok"`. Inference endpoints (`/v1/embeddings`, `/v1/models`) return **HTTP 503** with `Retry-After: 5` until models are ready.
 
 ## 🔗 WSL ↔ Windows Interop
 
@@ -410,9 +423,11 @@ onnx-http/
 ## 🔬 How It Works
 
 1. **Startup:** Loads the ONNX Runtime DLL via `ort::init_from()` *before* starting the async Tokio runtime (avoids a known deadlock in the `ort` crate's dynamic loading)
-2. **Model loading:** Scans `models/` for subdirectories, each containing `model.onnx` and `tokenizer.json`. Loads all valid models into a `ModelRegistry`. Each model creates a pool of ONNX sessions (`--pool-size`) to allow concurrent inference.
-3. **Request handling:** For each `/v1/embeddings` request:
+2. **Immediate HTTP binding:** The server binds to the port and starts accepting requests right away. The `/health` endpoint responds with `{"status": "loading"}` during initialization.
+3. **Background model loading:** Models are loaded in a background thread — scanning `models/` for subdirectories, each containing `model.onnx` and `tokenizer.json`. Each model creates a pool of ONNX sessions (`--pool-size`) for concurrent inference. Once all models are loaded, the registry flips to ready and inference endpoints start accepting requests.
+4. **Request handling:** For each `/v1/embeddings` request:
    - Tokenizes input text(s) using the HuggingFace tokenizer
+   - **Smart batching:** Sorts texts by token length and splits into sub-batches where the longest text is ≤2× the shortest — this minimizes wasted padding when inputs vary in length
    - Builds padded tensors for `input_ids`, `attention_mask`, and `token_type_ids`
    - Runs ONNX inference on a session from the pool via `spawn_blocking` (avoids blocking the async runtime)
    - Applies mean pooling with attention mask over the hidden states
